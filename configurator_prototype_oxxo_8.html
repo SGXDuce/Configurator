@@ -330,7 +330,9 @@ function findAssemblyPresetAncestor(path) {
   let node = root;
   let found = null;
   for (let i = 0; i < path.length; i++) {
-    if (node.kind === 'split' && node.assemblyPresetRef) {
+    // Batch 17: a -win preset's top-level node can be a sashSplit, not just a plain split (see
+    // confirmAssemblyPreset) — accept either kind here so a -win marker is still found.
+    if ((node.kind === 'split' || node.kind === 'sashSplit') && node.assemblyPresetRef) {
       found = { path: path.slice(0, i), assemblyPresetRef: node.assemblyPresetRef };
     }
     node = node.children[path[i]];
@@ -347,15 +349,26 @@ function findAssemblyPresetAncestor(path) {
 // than being missed by a leaf-only lookup. Section order follows the fold's own known shape
 // (buildAssemblyPresetTree): section i's own path, relative to the marked split, is
 // [0], [1,0], [1,1,0], ... with the very last section at all-1s of length sectionCount-1.
+// Batch 17: a -win id's tree has a different shape entirely (mixed sashSplit/flush-split) —
+// computeSlidingWinSectionPaths supplies the real per-section paths for that case.
 // Mullion thickness is read from the marked split's own thicknessMM (not averaged across the
 // chain) — if it's since become non-uniform via individual edits, this is the deliberately
-// chosen starting value per this batch's spec, not an attempt to reconcile a mismatch.
-function getAssemblyPresetCurrentState(markedPath, sectionCount) {
+// chosen starting value per this batch's spec, not an attempt to reconcile a mismatch. Batch 17:
+// a -win id has no mullion at all — mullionThickness is meaningless for it and never read by
+// its own confirm/edit path (which uses computeSlidingWinTotalWidth instead), so it's left at
+// whatever this returns without a dedicated branch here.
+function getAssemblyPresetCurrentState(markedPath, sectionCount, pattern, id) {
   const widths = [];
+  const winPaths = isSlidingWinId(id) ? computeSlidingWinSectionPaths(pattern) : null;
   for (let i = 0; i < sectionCount; i++) {
-    const relPath = [];
-    for (let k = 0; k < i; k++) relPath.push(1);
-    if (i < sectionCount - 1) relPath.push(0);
+    let relPath;
+    if (winPaths) {
+      relPath = winPaths[i];
+    } else {
+      relPath = [];
+      for (let k = 0; k < i; k++) relPath.push(1);
+      if (i < sectionCount - 1) relPath.push(0);
+    }
     const fullPath = markedPath.concat(relPath);
     const rect = lastNodeRects[pathKey(fullPath)];
     widths.push(rect ? rect.w : null);
@@ -1264,7 +1277,9 @@ function renderToolbar() {
     // Batch 12: the selected bar might BE the marked assembly-preset split itself (its own
     // path, not a strict ancestor — findAssemblyPresetAncestor only ever checks ancestors, by
     // the same contract as findHingedDoorAncestor, so that case is checked directly here).
-    if (!selected.isOverlap && node.kind === 'split' && node.assemblyPresetRef) {
+    // Batch 17: no longer excludes isOverlap — a -win preset's top-level node can itself be a
+    // sashSplit (see confirmAssemblyPreset), so its own overlap "bar" now carries the marker.
+    if ((node.kind === 'split' || node.kind === 'sashSplit') && node.assemblyPresetRef) {
       appendEditAssemblyWidthsButton(bar, selected.path, node.assemblyPresetRef);
     }
     return;
@@ -1676,7 +1691,8 @@ function appendEditAssemblyWidthsButton(bar, markedPath, assemblyPresetRef) {
     selected = { path: markedPath, isBar: false };
     pendingSplit = {
       path: markedPath, mode: 'editAssembly',
-      pattern: assemblyPresetRef.pattern, productClass: assemblyPresetRef.productClass
+      pattern: assemblyPresetRef.pattern, productClass: assemblyPresetRef.productClass,
+      id: assemblyPresetRef.id
     };
     render();
   };
@@ -1748,9 +1764,14 @@ function renderAssemblyPresetForm(bar, rect) {
 
   const pattern = isEditing ? pendingSplit.pattern : pendingSplit.chosenPreset.pattern;
   const productClass = isEditing ? pendingSplit.productClass : pendingSplit.chosenPreset.productClass;
+  // Batch 17: the actual preset id ('OX-win', etc) — needed (not just pattern) to tell a -win
+  // preset apart from its plain sliding-door sibling. Fresh creation reads it from the picker's
+  // chosenPreset; editing reads it from the assemblyPresetRef marker (batch 17 added `id` to
+  // that marker specifically so this would be recoverable on reopen).
+  const id = isEditing ? pendingSplit.id : pendingSplit.chosenPreset.id;
   // Batch 13: fresh creation carries `family` straight from the picker (chosenPreset.family).
   // Editing has no such field to read — the assemblyPresetRef marker only ever stores
-  // { pattern, productClass } (per this batch's spec) — so it's re-derived from the pattern
+  // { pattern, productClass, id } (id added batch 17) — so it's re-derived from the pattern
   // string itself via detectPresetFamily.
   const family = isEditing ? detectPresetFamily(pattern) : pendingSplit.chosenPreset.family;
 
@@ -1771,7 +1792,7 @@ function renderAssemblyPresetForm(bar, rect) {
   // (pendingSplit.widths starts unset) — not creation-time values, and not recomputed on every
   // keystroke re-render (which would fight whatever the person is actively typing).
   if (isEditing && pendingSplit.widths == null) {
-    const current = getAssemblyPresetCurrentState(pendingSplit.path, sectionCount);
+    const current = getAssemblyPresetCurrentState(pendingSplit.path, sectionCount, pattern, id);
     pendingSplit.widths = current.widths;
     pendingSplit.mullionThickness = current.mullionThickness;
   }
@@ -1786,9 +1807,19 @@ function renderAssemblyPresetForm(bar, rect) {
   if (!isEditing && pendingSplit.widths == null && pendingSplit.chosenPreset.id != null) {
     const match = findClosestCatalogSize(pendingSplit.chosenPreset.id, rect.h, rect.w);
     if (match) {
-      const equalWidth = match.widthMM / sectionCount;
-      pendingSplit.widths = new Array(sectionCount).fill(equalWidth);
+      // Batch 17: a -win id's sections are never equal widths (O is always 600mm, X is always
+      // 660mm) — use the O/X-solving formula against the matched catalog total instead of the
+      // generic equal-split every other family/id uses.
+      pendingSplit.widths = isSlidingWinId(id)
+        ? computeSlidingWinPrefillWidths(pattern, match.widthMM)
+        : new Array(sectionCount).fill(match.widthMM / sectionCount);
       pendingSplit.matchedCatalogSize = match;
+    } else if (isSlidingWinId(id)) {
+      // Batch 17: XOX-win has no catalog entry at all (confirmed — never appears as a key in
+      // ASSEMBLY_PRESET_CATALOG_SIZES). Rather than leaving the inputs blank (the existing
+      // fallback for a no-catalog-entry id), prefill with the plain 600/660 defaults directly —
+      // there's no real total to solve against, but the panel widths themselves are still known.
+      pendingSplit.widths = pattern.split('').map(c => c === 'O' ? 600 : 660);
     }
   }
 
@@ -1796,8 +1827,12 @@ function renderAssemblyPresetForm(bar, rect) {
   // for editing, it's the marked split's own current total width, which isn't a leaf rect at
   // all — recompute it as the sum of current section widths + mullions, from the same
   // live-current values the form is itself pre-filled with (not cached from creation time).
+  // Batch 17: a -win id has no mullion at all — its real total instead subtracts 60mm per
+  // overlap join (computeSlidingWinTotalWidth), same formula used by confirmAssemblyEdit itself.
   const availableWidth = isEditing
-    ? pendingSplit.widths.reduce((a, b) => a + (b || 0), 0) + (sectionCount - 1) * (pendingSplit.mullionThickness || 0)
+    ? (isSlidingWinId(id)
+        ? computeSlidingWinTotalWidth(pattern, pendingSplit.widths)
+        : pendingSplit.widths.reduce((a, b) => a + (b || 0), 0) + (sectionCount - 1) * (pendingSplit.mullionThickness || 0))
     : rect.w;
 
   if (!isEditing) {
@@ -1848,18 +1883,24 @@ function renderAssemblyPresetForm(bar, rect) {
     widthsRow.appendChild(wLabel);
     widthsRow.appendChild(wInput);
   }
-  const mullionLabel = document.createElement('span');
-  mullionLabel.textContent = 'Mullion thickness (mm)';
-  const mullionInput = document.createElement('input');
-  mullionInput.type = 'number';
-  mullionInput.id = 'presetMullionInput';
-  // Batch 16: on fresh creation (pendingSplit.mullionThickness still unset — edit mode already
-  // set it from live tree state in the pre-fill block above), default to the current jamb width
-  // rather than a flat 45. Prefill only — the field stays independently editable afterward,
-  // exactly like the catalog-size width prefill (batch 15) already behaves; nothing here locks it.
-  mullionInput.value = pendingSplit.mullionThickness != null ? pendingSplit.mullionThickness : getMullionPrefillMM();
-  widthsRow.appendChild(mullionLabel);
-  widthsRow.appendChild(mullionInput);
+  // Batch 17: a -win id has no mullion at its overlap/flush joins at all — sections meet either
+  // via a 60mm overlap or flush, never via a separate mullion member — so the mullion input is
+  // omitted entirely for -win ids rather than shown-but-ignored, which would be misleading.
+  const isSlidingWin = isSlidingWinId(id);
+  if (!isSlidingWin) {
+    const mullionLabel = document.createElement('span');
+    mullionLabel.textContent = 'Mullion thickness (mm)';
+    const mullionInput = document.createElement('input');
+    mullionInput.type = 'number';
+    mullionInput.id = 'presetMullionInput';
+    // Batch 16: on fresh creation (pendingSplit.mullionThickness still unset — edit mode already
+    // set it from live tree state in the pre-fill block above), default to the current jamb width
+    // rather than a flat 45. Prefill only — the field stays independently editable afterward,
+    // exactly like the catalog-size width prefill (batch 15) already behaves; nothing here locks it.
+    mullionInput.value = pendingSplit.mullionThickness != null ? pendingSplit.mullionThickness : getMullionPrefillMM();
+    widthsRow.appendChild(mullionLabel);
+    widthsRow.appendChild(mullionInput);
+  }
   const availableSpan = document.createElement('span');
   availableSpan.style.cssText = 'color:var(--text-dim);font-size:12px;';
   availableSpan.textContent = 'Available width here: ' + Math.round(availableWidth) + 'mm';
@@ -1871,8 +1912,8 @@ function renderAssemblyPresetForm(bar, rect) {
   const confirmBtn = document.createElement('button');
   confirmBtn.textContent = isEditing ? 'Confirm resize' : 'Confirm preset';
   confirmBtn.onclick = () => {
-    if (isEditing) confirmAssemblyEdit(pendingSplit.path, pattern, availableWidth, sectionCount);
-    else confirmAssemblyPreset(rect, pattern, productClass, family);
+    if (isEditing) confirmAssemblyEdit(pendingSplit.path, pattern, availableWidth, sectionCount, id);
+    else confirmAssemblyPreset(rect, pattern, productClass, family, id);
   };
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'secondary';
@@ -2041,7 +2082,11 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
   render();
 }
 
-function confirmAssemblyPreset(rect, pattern, productClass, family) {
+// Batch 17: `id` is now a required parameter (the actual picker-chosen preset id, e.g.
+// 'OX-win') — needed both to build the correct tree (buildPresetTree/buildAssemblyPresetTree
+// must know -win-ness) and to stamp it into assemblyPresetRef so a later "Edit assembly
+// widths" reopen can still tell a -win id apart from its plain-pattern sliding-door sibling.
+function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
   const errDiv = document.getElementById('presetWidthError');
   const sectionCount = getPresetSectionCount(pattern, family);
   const sectionWidths = [];
@@ -2053,19 +2098,24 @@ function confirmAssemblyPreset(rect, pattern, productClass, family) {
     }
     sectionWidths.push(v);
   }
-  const mullionThickness = Number(document.getElementById('presetMullionInput').value);
-  if (!(mullionThickness > 0)) {
+  // Batch 17: a -win id has no mullion input at all (see renderAssemblyPresetForm) — its
+  // sections' real combined width is sum(widths) minus 60mm per overlap join, never
+  // sum(widths)+mullions.
+  const mullionThickness = isSlidingWinId(id) ? 0 : Number(document.getElementById('presetMullionInput').value);
+  if (!isSlidingWinId(id) && !(mullionThickness > 0)) {
     errDiv.textContent = 'Enter a mullion thickness greater than 0.';
     return;
   }
-  const enteredTotal = sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
+  const enteredTotal = isSlidingWinId(id)
+    ? computeSlidingWinTotalWidth(pattern, sectionWidths)
+    : sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
   const available = rect.w;
   // Same convention as confirmSplit's own error message: state the entered total against the
   // available width, don't auto-resize the region — its own size is the fixed reference.
   if (Math.abs(enteredTotal - available) > 0.01) {
-    errDiv.textContent = 'Section widths plus mullions total ' + Math.round(enteredTotal) +
-      'mm, but this region is ' + Math.round(available) + 'mm wide. Adjust the widths or ' +
-      'mullion thickness so they add up exactly, or resize the region first.';
+    errDiv.textContent = (isSlidingWinId(id) ? 'Section widths (accounting for overlaps) total ' : 'Section widths plus mullions total ') + Math.round(enteredTotal) +
+      'mm, but this region is ' + Math.round(available) + 'mm wide. Adjust the widths' +
+      (isSlidingWinId(id) ? '' : ' or mullion thickness') + ' so they add up exactly, or resize the region first.';
     return;
   }
   // Preserve entered values on the pendingSplit in case render() is called again before the
@@ -2084,32 +2134,102 @@ function confirmAssemblyPreset(rect, pattern, productClass, family) {
 
   // productClass comes from which picker category was chosen — 'door' for Sliding doors,
   // 'window' for the other categories. buildPresetTree dispatches by family to
-  // buildAssemblyPresetTree (sliding, unchanged) or the batch-13 casement/awning builders.
-  const tree = buildPresetTree(pattern, sectionWidths, mullionThickness, productClass, family);
-  if (carriedHingedDoorRef && tree.kind === 'split') tree.hingedDoorRef = carriedHingedDoorRef;
+  // buildAssemblyPresetTree (sliding, -win ids now get the overlap tree — batch 17) or the
+  // batch-13 casement/awning builders.
+  const tree = buildPresetTree(pattern, sectionWidths, mullionThickness, productClass, family, id);
+  // Batch 17: a -win preset's top-level node can be a sashSplit (e.g. OX-win/OXX-win/XOX-win,
+  // whose sections form a single overlap run with no flush join at all — only OXXO-win's middle
+  // flush join produces a plain 'split' at the top) — so every marker/ref stamp below must
+  // accept 'sashSplit' here too, not just 'split', or 3 of the 4 -win ids would silently never
+  // get marked at all.
+  const isMarkableTree = tree.kind === 'split' || tree.kind === 'sashSplit';
+  if (carriedHingedDoorRef && isMarkableTree) tree.hingedDoorRef = carriedHingedDoorRef;
   // Batch 12: stamp the top-level split with an assemblyPresetRef marker — same precedent as
   // hingedDoorRef — so this subtree can be found again later to reopen its widths form. A
   // preset-built tree is otherwise indistinguishable from a hand-built one once created. Note
   // (batch 13): the marker never stores `family` — reopening re-derives it via
-  // detectPresetFamily, since this shape is exactly what this batch's spec calls for.
-  if (tree.kind === 'split') tree.assemblyPresetRef = { pattern, productClass };
+  // detectPresetFamily. Batch 17: the marker NOW also stores `id` — 'pattern' alone can't tell
+  // a -win preset apart from its plain sliding-door sibling ('OX' vs 'OX-win' share a pattern),
+  // and a later "Edit assembly widths" reopen needs to know which tree-building rule applies.
+  if (isMarkableTree) tree.assemblyPresetRef = { pattern, productClass, id };
   setNode(pendingSplit.path, tree);
   pendingSplit = null;
   selected = null;
   render();
 }
 
+// Batch 17: mirrors buildSlidingWinOverlapTree's exact construction order to derive each
+// section's relative path (from the marked split) within a -win preset's tree — the plain
+// right-fold's [1,1,...,0] path shape (used by every other family) does NOT apply here, since
+// a -win tree is a mix of sashSplit and, at run boundaries, plain zero-thickness splits.
+// Path-building rule, matching buildRun exactly: EVERY join's children array is literally
+// `[node, newLeaf]` — children[0] is always whatever's accumulated so far, children[1] is
+// always the newly-added leaf, REGARDLESS of sashSide/fromEdge (fromEdge only changes which
+// child geometry treats as the sash, never which child a given leaf ends up as structurally).
+// So on every step, every already-accumulated leaf's path gets a leading 0 prefixed (wrapped
+// into children[0]), and the new leaf gets path [1]. Verified by cross-checking with an actual
+// simulated tree build for all 4 confirmed patterns before trusting this.
+function computeSlidingWinSectionPaths(pattern) {
+  const n = pattern.length;
+  const slideDirections = computeDefaultSlideDirections(pattern);
+  const joins = [];
+  for (let i = 0; i < n - 1; i++) joins.push(classifySlidingWinJoin(pattern, i, slideDirections));
+  const runs = [];
+  let runStart = 0;
+  for (let i = 0; i < joins.length; i++) {
+    if (joins[i].type === 'flush') { runs.push({ startIdx: runStart, endIdx: i }); runStart = i + 1; }
+  }
+  runs.push({ startIdx: runStart, endIdx: n - 1 });
+
+  const paths = new Array(n);
+  runs.forEach(run => {
+    let accumulatedLeafPaths = [{ idx: run.startIdx, path: [] }];
+    for (let i = run.startIdx; i < run.endIdx; i++) {
+      const newIdx = i + 1;
+      accumulatedLeafPaths = accumulatedLeafPaths.map(p => ({ idx: p.idx, path: [0].concat(p.path) }));
+      accumulatedLeafPaths.push({ idx: newIdx, path: [1] });
+    }
+    accumulatedLeafPaths.forEach(p => { paths[p.idx] = p.path; });
+  });
+
+  // Join runs left to right, mirroring the final for-loop in buildSlidingWinOverlapTree:
+  // result = { children: [result, builtRuns[r].node] } — so every already-placed run's path
+  // gets a leading 0 each time a later run is joined on, and each newly-joined run (except it
+  // becomes the new "result" for the NEXT join) gets a leading 1 at the point it's joined.
+  if (runs.length > 1) {
+    // Simulate the same left-to-right accumulation used for the tree itself, this time over
+    // whole runs instead of individual leaves, so prefixes compound identically.
+    let coveredRunIndices = [0];
+    for (let r = 1; r < runs.length; r++) {
+      coveredRunIndices.forEach(ri => {
+        for (let idx = runs[ri].startIdx; idx <= runs[ri].endIdx; idx++) paths[idx] = [0].concat(paths[idx]);
+      });
+      for (let idx = runs[r].startIdx; idx <= runs[r].endIdx; idx++) paths[idx] = [1].concat(paths[idx]);
+      coveredRunIndices.push(r);
+    }
+  }
+  return paths;
+}
+
 // Batch 12: reads the actual current child node AT EACH SECTION of a marked assembly-preset
 // split, from the live tree (not lastLeaves — this needs the real node object, including
 // anything nested under it, not just its rendered rect). Same path shape as
 // getAssemblyPresetCurrentState: section i sits at [1,1,...,0] (i ones then a 0), except the
-// last section which is all 1s.
-function getAssemblyLeafNodesInOrder(markedPath, sectionCount) {
+// last section which is all 1s. Batch 17: a -win id's tree has a genuinely different shape
+// (mixed sashSplit/flush-split, not a uniform right-fold) — computeSlidingWinSectionPaths
+// derives the real per-section paths for that case instead.
+function getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id) {
   const nodes = [];
+  const winPaths = isSlidingWinId(id) ? computeSlidingWinSectionPaths(pattern) : null;
   for (let i = 0; i < sectionCount; i++) {
-    const relPath = [];
-    for (let k = 0; k < i; k++) relPath.push(1);
-    if (i < sectionCount - 1) relPath.push(0);
+    let relPath;
+    if (winPaths) {
+      relPath = winPaths[i];
+    } else {
+      relPath = [];
+      for (let k = 0; k < i; k++) relPath.push(1);
+      if (i < sectionCount - 1) relPath.push(0);
+    }
     nodes.push(getNode(markedPath.concat(relPath)));
   }
   return nodes;
@@ -2124,7 +2244,10 @@ function getAssemblyLeafNodesInOrder(markedPath, sectionCount) {
 // pattern is an opaque backend id (not a per-section letter string) for the casement/awning
 // families — this function otherwise needed no changes at all to support them, since it never
 // reads individual pattern characters, only the section count and the live tree itself.
-function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount) {
+// Batch 17: takes `id` too — a -win id rebuilds via buildSlidingWinOverlapTree, and has no
+// mullion input at all (its joins are overlap/flush, never a separate mullion member), so its
+// entered-total check uses computeSlidingWinTotalWidth instead of sectionWidths+mullions.
+function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, id) {
   const errDiv = document.getElementById('presetWidthError');
   const sectionWidths = [];
   for (let i = 0; i < sectionCount; i++) {
@@ -2135,30 +2258,39 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount) 
     }
     sectionWidths.push(v);
   }
-  const mullionThickness = Number(document.getElementById('presetMullionInput').value);
-  if (!(mullionThickness > 0)) {
+  const mullionThickness = isSlidingWinId(id) ? 0 : Number(document.getElementById('presetMullionInput').value);
+  if (!isSlidingWinId(id) && !(mullionThickness > 0)) {
     errDiv.textContent = 'Enter a mullion thickness greater than 0.';
     return;
   }
-  const enteredTotal = sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
+  const enteredTotal = isSlidingWinId(id)
+    ? computeSlidingWinTotalWidth(pattern, sectionWidths)
+    : sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
   // Same convention as confirmSplit's own error message and confirmAssemblyPreset above: state
   // the entered total against the available width, don't auto-resize the region — the marked
   // split's own current total width is the fixed reference, exactly as at creation time.
   if (Math.abs(enteredTotal - availableWidth) > 0.01) {
-    errDiv.textContent = 'Section widths plus mullions total ' + Math.round(enteredTotal) +
-      'mm, but this region is ' + Math.round(availableWidth) + 'mm wide. Adjust the widths or ' +
-      'mullion thickness so they add up exactly, or resize the region first.';
+    errDiv.textContent = (isSlidingWinId(id) ? 'Section widths (accounting for overlaps) total ' : 'Section widths plus mullions total ') + Math.round(enteredTotal) +
+      'mm, but this region is ' + Math.round(availableWidth) + 'mm wide. Adjust the widths' +
+      (isSlidingWinId(id) ? '' : ' or mullion thickness') + ' so they add up exactly, or resize the region first.';
     return;
   }
 
-  const existingLeaves = getAssemblyLeafNodesInOrder(markedPath, sectionCount);
+  const existingLeaves = getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id);
   // Fold sections into nested v-axis splits, right to left — identical geometry to
   // buildAssemblyPresetTree, but with the EXISTING leaf nodes (whatever they've become since
-  // creation) instead of freshly-built ones.
-  let node = existingLeaves[existingLeaves.length - 1];
-  for (let i = existingLeaves.length - 2; i >= 0; i--) {
-    const posMM = sectionWidths[i] + mullionThickness / 2;
-    node = { kind: 'split', axis: 'v', posMM, thicknessMM: mullionThickness, children: [existingLeaves[i], node] };
+  // creation) instead of freshly-built ones. Batch 17: a -win id instead rebuilds via
+  // buildSlidingWinOverlapTree (same overlap/flush join rule as fresh creation) so a resize
+  // preserves the sashSplit/flush structure rather than collapsing it back to plain splits.
+  let node;
+  if (isSlidingWinId(id)) {
+    node = buildSlidingWinOverlapTree(pattern, sectionWidths, existingLeaves);
+  } else {
+    node = existingLeaves[existingLeaves.length - 1];
+    for (let i = existingLeaves.length - 2; i >= 0; i--) {
+      const posMM = sectionWidths[i] + mullionThickness / 2;
+      node = { kind: 'split', axis: 'v', posMM, thicknessMM: mullionThickness, children: [existingLeaves[i], node] };
+    }
   }
   const markedNode = getNode(markedPath);
   if (markedNode.hingedDoorRef) node.hingedDoorRef = markedNode.hingedDoorRef;
@@ -2562,11 +2694,194 @@ function renderIconForPreset(pattern, family) {
   return renderPresetIcon(pattern, computeDefaultSlideDirections(pattern)); // sliding family
 }
 
+// Batch 17 — sliding WINDOW overlap (structural change, -win ids only; sliding DOORS keep the
+// plain-split behaviour in buildAssemblyPresetTree below, untouched). Confirmed rule (this
+// session, from real AutoCAD elevation drawings):
+//   - O (fixed) is always 600mm wide; X (sliding) is always 660mm wide — the sliding leaf is
+//     always the one that physically reaches over its neighbour (frontmost), never the fixed one.
+//   - O-X or X-O join: OVERLAP (60mm), X is always the sash side, regardless of which literal
+//     side it's on.
+//   - X-X join, same computed slideDirection (both point the same way, i.e. toward the same
+//     reference O): OVERLAP (60mm), the X FARTHER from that reference O is the sash side
+//     (frontmost) — confirmed "second X sits in front, followed by the first X, then the O".
+//   - X-X join, opposite/diverging directions (each X points toward its OWN nearer O, away from
+//     each other): FLUSH — the two leaves meet stile-to-stile with NO overlap at all. This is a
+//     structurally different join, not "overlap of zero" — built as an ordinary kind:'split'
+//     with thicknessMM:0 (the ALREADY-EXISTING zero-thickness "plain split" mechanism, §2.2 —
+//     not a new construct).
+//   - X-X join, CONVERGING directions (both point toward each other) never occurs in any of the
+//     four confirmed patterns (OX/OXX/XOX/OXXO) and has no confirmed physical meaning — this is
+//     deliberately NOT handled; classifySlidingWinJoin throws rather than guessing if it's ever
+//     reached, per this batch's own instruction to flag rather than invent behaviour.
+const SLIDING_OVERLAP_MM = 60;
+
+// Checks the preset ID (never the pattern string, which 'OX' and 'OX-win' share) to decide
+// whether the sliding-window overlap rule applies. Sliding DOORS (ids with no '-win' suffix)
+// keep the plain-split behaviour untouched — no real data exists for a door overlap rule.
+function isSlidingWinId(id) {
+  return typeof id === 'string' && id.slice(-4) === '-win';
+}
+
+// Catalog-informed default section widths for a -win preset, given the real catalog total
+// width T. Confirmed exact formula (verified this session against every real catalog data
+// point for OX-win/OXX-win/OXXO-win, no rounding needed in any case): every O is the same
+// solved width, every X is exactly 60mm more, and `joins` counts only real OVERLAP joins (a
+// flush join contributes nothing to the total, so it must be excluded from the join count that
+// the 60mm-per-join term corrects for):
+//   O = (T − 60·n_X + 60·joins) / (n_O + n_X),  X = O + 60
+// Falls back to rounding O to the nearest 5mm only if the exact formula doesn't land on a clean
+// result (rare, per this session's own findings) — the existing exact-match total validation
+// then catches and prompts for whatever few-mm gap results, same as any other manually-entered
+// mismatch.
+function computeSlidingWinPrefillWidths(pattern, totalWidthMM) {
+  const slideDirections = computeDefaultSlideDirections(pattern);
+  const n = pattern.length;
+  let overlapJoins = 0;
+  for (let i = 0; i < n - 1; i++) {
+    if (classifySlidingWinJoin(pattern, i, slideDirections).type === 'overlap') overlapJoins++;
+  }
+  const nO = pattern.split('').filter(c => c === 'O').length;
+  const nX = n - nO;
+  let O = (totalWidthMM - SLIDING_OVERLAP_MM * nX + SLIDING_OVERLAP_MM * overlapJoins) / (nO + nX);
+  if (Math.abs(O - Math.round(O / 5) * 5) > 0.01) O = Math.round(O / 5) * 5;
+  const X = O + SLIDING_OVERLAP_MM;
+  return pattern.split('').map(c => c === 'O' ? O : X);
+}
+
+// The real total width a -win preset's entered section widths add up to: sum of the individual
+// panel widths minus 60mm for every real OVERLAP join (a flush join contributes nothing to
+// subtract, since flush panels don't overlap at all) — there is no mullion at any -win join, so
+// unlike every other family this total is never sectionWidths-plus-mullions.
+function computeSlidingWinTotalWidth(pattern, sectionWidthsMM) {
+  const slideDirections = computeDefaultSlideDirections(pattern);
+  let total = sectionWidthsMM.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < pattern.length - 1; i++) {
+    if (classifySlidingWinJoin(pattern, i, slideDirections).type === 'overlap') total -= SLIDING_OVERLAP_MM;
+  }
+  return total;
+}
+
+// Classifies the join between adjacent leaves at pattern indices i and i+1. Returns
+// { type: 'overlap', sashSide: 'left'|'right' } or { type: 'flush' }. Reuses
+// computeDefaultSlideDirections — the existing, already-tested source of truth for which
+// direction each X points — rather than inventing separate join-direction logic.
+function classifySlidingWinJoin(pattern, i, slideDirections) {
+  const leftCh = pattern[i], rightCh = pattern[i + 1];
+  if (leftCh === 'O' && rightCh === 'X') return { type: 'overlap', sashSide: 'right' };
+  if (leftCh === 'X' && rightCh === 'O') return { type: 'overlap', sashSide: 'left' };
+  if (leftCh === 'X' && rightCh === 'X') {
+    const dirL = slideDirections[i], dirR = slideDirections[i + 1];
+    if (dirL === dirR) {
+      // Same direction: overlap. The X farther from the nearest O is the sash (frontmost) —
+      // computeDefaultSlideDirections doesn't expose raw distance directly, so it's
+      // recomputed here the same way that function does internally (nearest O by index).
+      const oIndices = [];
+      for (let k = 0; k < pattern.length; k++) if (pattern[k] === 'O') oIndices.push(k);
+      const distToNearestO = idx => oIndices.length ? Math.min(...oIndices.map(o => Math.abs(o - idx))) : Infinity;
+      const distL = distToNearestO(i), distR = distToNearestO(i + 1);
+      return { type: 'overlap', sashSide: distL > distR ? 'left' : 'right' };
+    }
+    // Opposite directions: each X points toward its own nearer O, away from each other — flush.
+    if ((dirL === 'left' && dirR === 'right')) return { type: 'flush' };
+    // Converging (dirL === 'right' && dirR === 'left', i.e. both point at each other) has no
+    // confirmed physical meaning and doesn't occur in any of the four confirmed patterns —
+    // flag rather than guess, per this batch's explicit instruction.
+    throw new Error('classifySlidingWinJoin: unhandled X-X direction combination (' + dirL + ', ' + dirR + ') at index ' + i + ' in pattern "' + pattern + '" — no confirmed rule for a converging join.');
+  }
+  // O-O adjacency never occurs in any confirmed sliding-window pattern (O's are never adjacent
+  // in OX/OXX/XOX/OXXO) — flag rather than silently picking a behaviour with no data behind it.
+  throw new Error('classifySlidingWinJoin: unexpected O-O adjacency at index ' + i + ' in pattern "' + pattern + '".');
+}
+
+// Builds the sliding-WINDOW overlap tree for a -win preset id. sectionWidthsMM are the entered
+// per-section widths (600/660-shaped, per the form's own prefill — but this function trusts
+// whatever was actually entered, same as every other builder; it doesn't re-derive 600/660
+// itself). Algorithm: split the pattern into maximal "overlap runs" (consecutive joins that are
+// all 'overlap', broken wherever a 'flush' join occurs), build each run as its own nested
+// sashSplit chain (left to right, tracking each step's true running total width so remSize
+// always resolves to the remainder side's own real width — verified by hand-tracing OX/OXX/XOX
+// against walk()'s actual geometry before writing this), then join separate runs together with
+// an ordinary (possibly zero-thickness) ' split' node — a flush join needs no overlap
+// consideration at all, so it can sit directly above two already-complete sub-assemblies.
+function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
+  const n = pattern.length;
+  const joins = [];
+  const slideDirections = computeDefaultSlideDirections(pattern);
+  for (let i = 0; i < n - 1; i++) joins.push(classifySlidingWinJoin(pattern, i, slideDirections));
+
+  // Split into runs at each flush join.
+  const runs = []; // each run: { startIdx, endIdx } inclusive leaf indices
+  let runStart = 0;
+  for (let i = 0; i < joins.length; i++) {
+    if (joins[i].type === 'flush') {
+      runs.push({ startIdx: runStart, endIdx: i });
+      runStart = i + 1;
+    }
+  }
+  runs.push({ startIdx: runStart, endIdx: n - 1 });
+
+  // Build one run (a contiguous span of leaves joined only by overlaps) into a single node +
+  // its own true total width, left to right.
+  function buildRun(run) {
+    let node = leaves[run.startIdx];
+    let nodeWidth = sectionWidthsMM[run.startIdx];
+    for (let i = run.startIdx; i < run.endIdx; i++) {
+      const join = joins[i]; // join between leaf i and i+1, guaranteed 'overlap' within a run
+      const newLeaf = leaves[i + 1];
+      const newLeafWidth = sectionWidthsMM[i + 1];
+      if (join.sashSide === 'right') {
+        // The newly-added leaf (i+1) is the sash; whatever's accumulated so far is the
+        // remainder. fromEdge:'end' puts the sash at children[1] (physically right). This
+        // branch never needs the accumulated side to itself be a single leaf — remainder-side
+        // sizing only ever depends on nodeWidth (the accumulated side's own true running total),
+        // never on it structurally being one leaf — so no defensive check is needed here,
+        // unlike the 'left'-sash branch below.
+        const avail = nodeWidth + newLeafWidth - SLIDING_OVERLAP_MM;
+        node = { kind: 'sashSplit', axis: 'v', fromEdge: 'end', sashSizeMM: newLeafWidth, overlapMM: SLIDING_OVERLAP_MM, children: [node, newLeaf] };
+        nodeWidth = avail;
+      } else {
+        // The accumulated-so-far side is the sash. This is only geometrically valid while that
+        // accumulated side is still a single leaf (sashSizeMM must equal one real panel's own
+        // width) — true for every join that reaches this branch in the four confirmed patterns,
+        // since a 'left'-sash join only ever occurs as the FIRST join of a run. Flag rather than
+        // silently mis-size if a future pattern ever reaches this branch after the accumulated
+        // side has already grown past one leaf.
+        if (i !== run.startIdx) {
+          throw new Error('buildSlidingWinOverlapTree: a left-sash overlap join was reached after ' +
+            'the accumulated side already spans more than one leaf (pattern "' + pattern + '", join index ' + i + '). ' +
+            'sashSizeMM would no longer equal a single real panel width — this combination has no confirmed geometry, refusing to guess.');
+        }
+        const avail = nodeWidth + newLeafWidth - SLIDING_OVERLAP_MM;
+        node = { kind: 'sashSplit', axis: 'v', fromEdge: 'start', sashSizeMM: nodeWidth, overlapMM: SLIDING_OVERLAP_MM, children: [node, newLeaf] };
+        nodeWidth = avail;
+      }
+    }
+    return { node, width: nodeWidth };
+  }
+
+  const builtRuns = runs.map(buildRun);
+
+  // Join separate runs left to right with ordinary (zero-thickness, i.e. flush) split nodes —
+  // reuses the already-existing "plain split with thicknessMM:0" mechanism, not a new construct.
+  let result = builtRuns[0].node;
+  let resultWidth = builtRuns[0].width;
+  for (let r = 1; r < builtRuns.length; r++) {
+    result = { kind: 'split', axis: 'v', posMM: resultWidth, thicknessMM: 0, children: [result, builtRuns[r].node] };
+    resultWidth = resultWidth + builtRuns[r].width;
+  }
+  return result;
+}
+
 // Builds the split tree + leaves for an assembly preset. Pure/no side effects on global state —
 // returns the tree node to be placed at the target path via setNode. `productClass` is an
 // explicit parameter (never hardcoded 'door' in here) so a future window-only preset variant
 // can reuse this unchanged by passing 'window' instead.
-function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass) {
+// Batch 17: `id` is an explicit optional parameter (not derived from `pattern`, since 'OX' and
+// 'OX-win' share a pattern but must not share behaviour) — when it's a -win id, the sliding
+// leaves get sashSizeMM/overlap treatment (buildSlidingWinOverlapTree) instead of the plain
+// right-to-left split fold. Sliding DOORS (id undefined, or an id with no -win suffix) fall
+// through to the original untouched fold below.
+function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   const leaves = pattern.split('').map((ch, i) => {
     const type = ch === 'O' ? 'fixed' : 'horizontal-slider';
@@ -2578,6 +2893,11 @@ function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, p
     if (type === 'horizontal-slider') leaf.slideDirection = slideDirections[i];
     return leaf;
   });
+
+  if (isSlidingWinId(id)) {
+    return buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves);
+  }
+
   // Fold sections into nested v-axis splits, right to left. `posMM` on a split node is always
   // local to that split's own region (per walk()'s existing v-axis geometry: children[0] is
   // [0, posMM-thickness/2], children[1] is [posMM+thickness/2, regionWidth]) — so for the split
@@ -2677,10 +2997,12 @@ function buildDoubleHungPresetTree(pattern, unitWidthMM, topHeightMM, transomThi
 // its confirm form and confirmAssemblyPreset call site build its tree directly via
 // buildDoubleHungPresetTree, since its inputs (unit width/height/transom/mullion) don't fit
 // this dispatcher's (pattern, sectionWidthsMM, mullionThicknessMM, productClass) shape.
-function buildPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, family) {
+// Batch 17: `id` threaded through as an explicit optional last parameter, used only by the
+// sliding (O/X) branch — casement/awning ids never carry -win-style suffix semantics.
+function buildPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, family, id) {
   if (family === 'casement') return buildCasementPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass);
   if (family === 'awning') return buildAwningPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass);
-  return buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass);
+  return buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id);
 }
 
 function confirmSashSplit(rect) {
