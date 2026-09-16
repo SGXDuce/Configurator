@@ -155,6 +155,16 @@ const RIGHT_GUTTER = 95;
 const BOTTOM_GUTTER = 60;
 const DEFAULT_SASH_MM = 40;
 const DEFAULT_OVERLAP_MM = 25;
+// Batch 16: real per-type default sash edge shape (Duce's own NGR data — top/left/right rails
+// 60mm, bottom rail 86mm), stamped on panes created via the awning and casement assembly
+// presets. Manually created/edited panes are untouched — they keep using the uniform
+// DEFAULT_SASH_MM fallback everywhere else; this only changes what a PRESET stamps at creation.
+// Double-hung is deliberately excluded here — its meeting-rail edge should be 60mm rather than
+// this general 86mm-bottom shape (per the double-hung overlap batch's own explicit assumption),
+// and that structural batch (kind:'sashSplit' for the internal division) had not landed in the
+// working tree at the time this was written — applying this shape to double-hung now would risk
+// guessing at edge ordering that batch is meant to settle. Skipped, not silently resolved.
+const PRESET_SASH_EDGES = { sashTopMM: 60, sashLeftMM: 60, sashRightMM: 60, sashBottomMM: 86 };
 const DIM_ROW_STEP = 20; // px between stacked chain-dimension rows
 const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent split-dimension labels
 
@@ -370,6 +380,20 @@ function getOverallH() { return Number(document.getElementById('frameH').value) 
 function getMembers() { return hasFrame ? frameMembers : { head: 0, sill: 0, jambL: 0, jambR: 0 }; }
 function getOpeningW(overallW, m) { return overallW - m.jambL - m.jambR; }
 function getOpeningH(overallH, m) { return overallH - m.head - m.sill; }
+
+// Batch 16: assembly-preset mullion-thickness prefill on fresh creation, per the addendum's
+// "mullion = jamb width" rule for casement/awning/double-hung, extended here to every
+// horizontal-row family's between-section mullion (they're all the same real-world member).
+// No existing code anywhere resolves jambL vs jambR to a single representative value when they
+// differ — mainOrigin() is the one place that already picks a single jamb (jambL alone, as the
+// frame's own reference-origin jamb) rather than averaging or preferring one arbitrarily for a
+// new reason, so this follows that same precedent instead of inventing a fresh resolution rule.
+// Falls back to the pre-existing hardcoded default (45) when there's no frame added at all,
+// since there's no jamb value to derive from in that case.
+function getMullionPrefillMM() {
+  const m = getMembers();
+  return hasFrame ? m.jambL : 45;
+}
 
 // Item 10: main origin is the outer frame's true outside corner when a frame exists, or the
 // opening's own bottom-left corner otherwise. With overall now the fixed outer dimension and
@@ -1829,7 +1853,11 @@ function renderAssemblyPresetForm(bar, rect) {
   const mullionInput = document.createElement('input');
   mullionInput.type = 'number';
   mullionInput.id = 'presetMullionInput';
-  mullionInput.value = pendingSplit.mullionThickness != null ? pendingSplit.mullionThickness : 45;
+  // Batch 16: on fresh creation (pendingSplit.mullionThickness still unset — edit mode already
+  // set it from live tree state in the pre-fill block above), default to the current jamb width
+  // rather than a flat 45. Prefill only — the field stays independently editable afterward,
+  // exactly like the catalog-size width prefill (batch 15) already behaves; nothing here locks it.
+  mullionInput.value = pendingSplit.mullionThickness != null ? pendingSplit.mullionThickness : getMullionPrefillMM();
   widthsRow.appendChild(mullionLabel);
   widthsRow.appendChild(mullionInput);
   const availableSpan = document.createElement('span');
@@ -1910,6 +1938,12 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   const transomInput = document.createElement('input');
   transomInput.type = 'number';
   transomInput.id = 'dhTransomInput';
+  // Batch 16: deliberately NOT given a catalog/frame-derived prefill in this batch — there is
+  // currently no vertically-stacked preset in the real tool for a "transom = head width" rule
+  // to have a natural counterpart against (unlike the horizontal mullion below, which has the
+  // jamb-width precedent from every horizontal-row family). Once a vertically-stacked preset
+  // exists, the transom prefill should equal the frame's head width, same pattern as the
+  // mullion-from-jamb rule here — noted so it isn't forgotten, not built now.
   transomInput.value = 45;
   row.appendChild(transomLabel);
   row.appendChild(transomInput);
@@ -1921,7 +1955,10 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
     const mullionInput = document.createElement('input');
     mullionInput.type = 'number';
     mullionInput.id = 'dhMullionInput';
-    mullionInput.value = 45;
+    // Batch 16: same jamb-width prefill as every other horizontal-row family's between-section
+    // mullion — this is a real mullion (double-hung units side by side), not a transom, so it's
+    // in scope even though double-hung's own internal structural batch is tracked separately.
+    mullionInput.value = getMullionPrefillMM();
     row.appendChild(mullionLabel);
     row.appendChild(mullionInput);
   }
@@ -2222,7 +2259,11 @@ const ASSEMBLY_PRESET_CATEGORIES = [
   { name: 'Casement windows', productClass: 'window', family: 'casement',
     presets: [
       { id: 'C', pattern: 'C' }, { id: 'CCset', pattern: 'CCset' },
-      { id: 'CCpair', pattern: 'CCpair' }, { id: 'CCCCpair', pattern: 'CCCCpair' }
+      { id: 'CCpair', pattern: 'CCpair' },
+      // Batch 16: CCCCset — four sashes, all same hinge direction, no mirroring. Genuinely new
+      // (previously only CCCCpair existed for four units).
+      { id: 'CCCCset', pattern: 'CCCCset' },
+      { id: 'CCCCpair', pattern: 'CCCCpair' }
     ]
   },
   { name: 'Awning windows', productClass: 'window', family: 'awning',
@@ -2296,7 +2337,7 @@ function findClosestCatalogSize(id, actualHeightMM, actualWidthMM) {
 // not N separate section-width inputs), so it has its own unit-count lookup below
 // (DOUBLE_HUNG_UNIT_COUNTS) and its own dedicated code paths rather than being forced through
 // this "flat row of N sections" abstraction.
-const CASEMENT_SECTION_COUNTS = { 'C': 1, 'CCset': 2, 'CCpair': 2, 'CCCCpair': 4 };
+const CASEMENT_SECTION_COUNTS = { 'C': 1, 'CCset': 2, 'CCpair': 2, 'CCCCset': 4, 'CCCCpair': 4 };
 const AWNING_SECTION_COUNTS = { 'A': 1, 'AA': 2, 'AAA': 3, 'AAAA': 4 };
 // Batch 14: unit count per double-hung preset id — reused by tree building and icon drawing.
 const DOUBLE_HUNG_UNIT_COUNTS = { 'D': 1, 'DD': 2, 'DDD': 3 };
@@ -2306,18 +2347,21 @@ function getPresetSectionCount(pattern, family) {
   return pattern.length; // sliding family (and default): one character per section
 }
 
-// Batch 13: default hingeEdge per section for the casement family. Per spec:
+// Batch 13/16: default hingeEdge per section for the casement family. Per spec:
 //  - 'C' (single casement) — hingeEdge:'left', an arbitrary default: with only one section
 //    there's no natural reference point to mirror against, same reasoning already used for
 //    computeDefaultSlideDirections' own no-reference-point fallback (sliding family, no O).
 //  - 'CCset' — both sections hingeEdge:'left' (same direction, not mirrored).
 //  - 'CCpair' — hingeEdge:'left' then 'right': mirrored outward from the shared centre.
+//  - 'CCCCset' (batch 16) — four sashes, all hingeEdge:'left', same direction throughout, no
+//    mirroring at all — CCset's own logic, just extended to 4 sections instead of 2.
 //  - 'CCCCpair' — two INDEPENDENT pairs, each mirrored outward from its own pair's centre, not
 //    one shared centre across all four: sections [0,1] and [2,3] each get ['left','right'].
 const CASEMENT_HINGE_EDGES = {
   'C': ['left'],
   'CCset': ['left', 'left'],
   'CCpair': ['left', 'right'],
+  'CCCCset': ['left', 'left', 'left', 'left'],
   'CCCCpair': ['left', 'right', 'left', 'right']
 };
 
@@ -2568,8 +2612,9 @@ function buildCasementPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, p
   const hingeEdges = CASEMENT_HINGE_EDGES[pattern];
   const leaves = hingeEdges.map(edge => ({
     kind: 'filled', type: 'hinged', productClass, hingeEdge: edge,
-    sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM,
-    sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM
+    // Batch 16: real per-type default shape (60/60/60/86) instead of the uniform
+    // DEFAULT_SASH_MM every other manually-assigned pane still falls back to.
+    ...PRESET_SASH_EDGES
   }));
   return foldSectionsIntoSplits(leaves, sectionWidthsMM, mullionThicknessMM);
 }
@@ -2583,8 +2628,8 @@ function buildAwningPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, pro
   for (let i = 0; i < sectionCount; i++) {
     leaves.push({
       kind: 'filled', type: 'hinged', productClass, hingeEdge: 'top',
-      sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM,
-      sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM
+      // Batch 16: real per-type default shape (60/60/60/86), same as casement above.
+      ...PRESET_SASH_EDGES
     });
   }
   return foldSectionsIntoSplits(leaves, sectionWidthsMM, mullionThicknessMM);
@@ -2598,6 +2643,14 @@ function buildAwningPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, pro
 // width, so passing these unit-subtrees straight in as `leaves` reuses that fold exactly as-is.
 // unitWidthMM/topHeightMM/transomThicknessMM/mullionThicknessMM are uniform across every unit,
 // per this family's own spec (unlike casement, which allows independent per-section widths).
+// Batch 16: deliberately NOT given the PRESET_SASH_EDGES (60/60/60/86) treatment applied to
+// casement/awning above — a double-hung sash's meeting-rail edge (bottom of the top sash, top
+// of the bottom sash) should be 60mm rather than the general 86mm-bottom pattern once the
+// double-hung internal-overlap structural batch lands (kind:'sashSplit' replacing the plain
+// kind:'split' transom below). That batch had not landed in this working tree when this was
+// written, so applying any per-edge shape here now would mean guessing at which edge is the
+// "outer" vs "meeting" one — skipped rather than silently resolved. Still uniform
+// DEFAULT_SASH_MM on all four edges, unchanged from batch 14.
 function buildDoubleHungUnit(productClass, topHeightMM, transomThicknessMM) {
   return {
     kind: 'split', axis: 'h', posMM: topHeightMM, thicknessMM: transomThicknessMM,
