@@ -359,7 +359,7 @@ function findAssemblyPresetAncestor(path) {
 // whatever this returns without a dedicated branch here.
 function getAssemblyPresetCurrentState(markedPath, sectionCount, pattern, id) {
   const widths = [];
-  const winPaths = isSlidingWinId(id) ? computeSlidingWinSectionPaths(pattern) : null;
+  const winPaths = isSlidingOverlapId(id, pattern) ? computeSlidingWinSectionPaths(pattern) : null;
   for (let i = 0; i < sectionCount; i++) {
     let relPath;
     if (winPaths) {
@@ -1810,11 +1810,11 @@ function renderAssemblyPresetForm(bar, rect) {
       // Batch 17: a -win id's sections are never equal widths (O is always 600mm, X is always
       // 660mm) — use the O/X-solving formula against the matched catalog total instead of the
       // generic equal-split every other family/id uses.
-      pendingSplit.widths = isSlidingWinId(id)
+      pendingSplit.widths = isSlidingOverlapId(id, pattern)
         ? computeSlidingWinPrefillWidths(pattern, match.widthMM)
         : new Array(sectionCount).fill(match.widthMM / sectionCount);
       pendingSplit.matchedCatalogSize = match;
-    } else if (isSlidingWinId(id)) {
+    } else if (isSlidingOverlapId(id, pattern)) {
       // Batch 17: XOX-win has no catalog entry at all (confirmed — never appears as a key in
       // ASSEMBLY_PRESET_CATALOG_SIZES). Rather than leaving the inputs blank (the existing
       // fallback for a no-catalog-entry id), prefill with the plain 600/660 defaults directly —
@@ -1830,7 +1830,7 @@ function renderAssemblyPresetForm(bar, rect) {
   // Batch 17: a -win id has no mullion at all — its real total instead subtracts 60mm per
   // overlap join (computeSlidingWinTotalWidth), same formula used by confirmAssemblyEdit itself.
   const availableWidth = isEditing
-    ? (isSlidingWinId(id)
+    ? (isSlidingOverlapId(id, pattern)
         ? computeSlidingWinTotalWidth(pattern, pendingSplit.widths)
         : pendingSplit.widths.reduce((a, b) => a + (b || 0), 0) + (sectionCount - 1) * (pendingSplit.mullionThickness || 0))
     : rect.w;
@@ -1883,11 +1883,12 @@ function renderAssemblyPresetForm(bar, rect) {
     widthsRow.appendChild(wLabel);
     widthsRow.appendChild(wInput);
   }
-  // Batch 17: a -win id has no mullion at its overlap/flush joins at all — sections meet either
-  // via a 60mm overlap or flush, never via a separate mullion member — so the mullion input is
-  // omitted entirely for -win ids rather than shown-but-ignored, which would be misleading.
-  const isSlidingWin = isSlidingWinId(id);
-  if (!isSlidingWin) {
+  // Batch 17/18: a sliding (door or window) id has no mullion at its overlap/flush joins at
+  // all — sections meet either via a 60mm overlap or flush, never via a separate mullion
+  // member — so the mullion input is omitted entirely rather than shown-but-ignored, which
+  // would be misleading.
+  const isSlidingOverlap = isSlidingOverlapId(id, pattern);
+  if (!isSlidingOverlap) {
     const mullionLabel = document.createElement('span');
     mullionLabel.textContent = 'Mullion thickness (mm)';
     const mullionInput = document.createElement('input');
@@ -2101,21 +2102,21 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
   // Batch 17: a -win id has no mullion input at all (see renderAssemblyPresetForm) — its
   // sections' real combined width is sum(widths) minus 60mm per overlap join, never
   // sum(widths)+mullions.
-  const mullionThickness = isSlidingWinId(id) ? 0 : Number(document.getElementById('presetMullionInput').value);
-  if (!isSlidingWinId(id) && !(mullionThickness > 0)) {
+  const mullionThickness = isSlidingOverlapId(id, pattern) ? 0 : Number(document.getElementById('presetMullionInput').value);
+  if (!isSlidingOverlapId(id, pattern) && !(mullionThickness > 0)) {
     errDiv.textContent = 'Enter a mullion thickness greater than 0.';
     return;
   }
-  const enteredTotal = isSlidingWinId(id)
+  const enteredTotal = isSlidingOverlapId(id, pattern)
     ? computeSlidingWinTotalWidth(pattern, sectionWidths)
     : sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
   const available = rect.w;
   // Same convention as confirmSplit's own error message: state the entered total against the
   // available width, don't auto-resize the region — its own size is the fixed reference.
   if (Math.abs(enteredTotal - available) > 0.01) {
-    errDiv.textContent = (isSlidingWinId(id) ? 'Section widths (accounting for overlaps) total ' : 'Section widths plus mullions total ') + Math.round(enteredTotal) +
+    errDiv.textContent = (isSlidingOverlapId(id, pattern) ? 'Section widths (accounting for overlaps) total ' : 'Section widths plus mullions total ') + Math.round(enteredTotal) +
       'mm, but this region is ' + Math.round(available) + 'mm wide. Adjust the widths' +
-      (isSlidingWinId(id) ? '' : ' or mullion thickness') + ' so they add up exactly, or resize the region first.';
+      (isSlidingOverlapId(id, pattern) ? '' : ' or mullion thickness') + ' so they add up exactly, or resize the region first.';
     return;
   }
   // Preserve entered values on the pendingSplit in case render() is called again before the
@@ -2220,7 +2221,7 @@ function computeSlidingWinSectionPaths(pattern) {
 // derives the real per-section paths for that case instead.
 function getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id) {
   const nodes = [];
-  const winPaths = isSlidingWinId(id) ? computeSlidingWinSectionPaths(pattern) : null;
+  const winPaths = isSlidingOverlapId(id, pattern) ? computeSlidingWinSectionPaths(pattern) : null;
   for (let i = 0; i < sectionCount; i++) {
     let relPath;
     if (winPaths) {
@@ -2258,21 +2259,21 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
     }
     sectionWidths.push(v);
   }
-  const mullionThickness = isSlidingWinId(id) ? 0 : Number(document.getElementById('presetMullionInput').value);
-  if (!isSlidingWinId(id) && !(mullionThickness > 0)) {
+  const mullionThickness = isSlidingOverlapId(id, pattern) ? 0 : Number(document.getElementById('presetMullionInput').value);
+  if (!isSlidingOverlapId(id, pattern) && !(mullionThickness > 0)) {
     errDiv.textContent = 'Enter a mullion thickness greater than 0.';
     return;
   }
-  const enteredTotal = isSlidingWinId(id)
+  const enteredTotal = isSlidingOverlapId(id, pattern)
     ? computeSlidingWinTotalWidth(pattern, sectionWidths)
     : sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
   // Same convention as confirmSplit's own error message and confirmAssemblyPreset above: state
   // the entered total against the available width, don't auto-resize the region — the marked
   // split's own current total width is the fixed reference, exactly as at creation time.
   if (Math.abs(enteredTotal - availableWidth) > 0.01) {
-    errDiv.textContent = (isSlidingWinId(id) ? 'Section widths (accounting for overlaps) total ' : 'Section widths plus mullions total ') + Math.round(enteredTotal) +
+    errDiv.textContent = (isSlidingOverlapId(id, pattern) ? 'Section widths (accounting for overlaps) total ' : 'Section widths plus mullions total ') + Math.round(enteredTotal) +
       'mm, but this region is ' + Math.round(availableWidth) + 'mm wide. Adjust the widths' +
-      (isSlidingWinId(id) ? '' : ' or mullion thickness') + ' so they add up exactly, or resize the region first.';
+      (isSlidingOverlapId(id, pattern) ? '' : ' or mullion thickness') + ' so they add up exactly, or resize the region first.';
     return;
   }
 
@@ -2283,7 +2284,7 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
   // buildSlidingWinOverlapTree (same overlap/flush join rule as fresh creation) so a resize
   // preserves the sashSplit/flush structure rather than collapsing it back to plain splits.
   let node;
-  if (isSlidingWinId(id)) {
+  if (isSlidingOverlapId(id, pattern)) {
     node = buildSlidingWinOverlapTree(pattern, sectionWidths, existingLeaves);
   } else {
     node = existingLeaves[existingLeaves.length - 1];
@@ -2694,8 +2695,8 @@ function renderIconForPreset(pattern, family) {
   return renderPresetIcon(pattern, computeDefaultSlideDirections(pattern)); // sliding family
 }
 
-// Batch 17 — sliding WINDOW overlap (structural change, -win ids only; sliding DOORS keep the
-// plain-split behaviour in buildAssemblyPresetTree below, untouched). Confirmed rule (this
+// Batch 17 — sliding WINDOW overlap (structural change, originally -win ids only; sliding DOORS
+// kept the plain-split behaviour in buildAssemblyPresetTree below). Confirmed rule (batch 17
 // session, from real AutoCAD elevation drawings):
 //   - O (fixed) is always 600mm wide; X (sliding) is always 660mm wide — the sliding leaf is
 //     always the one that physically reaches over its neighbour (frontmost), never the fixed one.
@@ -2710,28 +2711,56 @@ function renderIconForPreset(pattern, family) {
 //     with thicknessMM:0 (the ALREADY-EXISTING zero-thickness "plain split" mechanism, §2.2 —
 //     not a new construct).
 //   - X-X join, CONVERGING directions (both point toward each other) never occurs in any of the
-//     four confirmed patterns (OX/OXX/XOX/OXXO) and has no confirmed physical meaning — this is
-//     deliberately NOT handled; classifySlidingWinJoin throws rather than guessing if it's ever
-//     reached, per this batch's own instruction to flag rather than invent behaviour.
+//     four originally-confirmed patterns (OX/OXX/XOX/OXXO) and has no confirmed physical
+//     meaning — this is deliberately NOT handled; classifySlidingWinJoin throws rather than
+//     guessing if it's ever reached, per batch 17's own instruction to flag rather than invent
+//     behaviour. Batch 18 traces OXXXX/OXXXXX by hand (see that function's own comment) and
+//     confirms this guard is still never reached for the longer door-only patterns.
+//
+// Batch 18 — two corrections/extensions on top of batch 17, per the tuck-in addendum:
+//   1. A second, independent reduction — FRAME TUCK-IN — was found missing from batch 17's
+//      total-width formula. Any panel edge that touches the outer frame (a jamb, the head, or
+//      the sill) has 20mm of its stile/rail hidden inside that frame member's own cavity. For a
+//      single horizontal row this is always exactly the two frame-touching edges — the leftmost
+//      panel's left edge and the rightmost panel's right edge — regardless of panel count, so
+//      it's a FLAT 40mm per row, not per-panel or per-join. Gated on `hasFrame` (there's no jamb
+//      cavity to tuck into with no outer frame) — this gating is a default applied per the
+//      batch-18 prompt's own instruction, NOT independently confirmed by the person; flagged as
+//      still open in the project summary.
+//   2. The whole overlap/tuck-in mechanism now extends to sliding DOORS too — confirmed by the
+//      person as a deliberate assumption (600/660/60mm overlap/40mm tuck-in, identical to
+//      windows), explicitly NOT verified against any real door drawing. Extends to every sliding
+//      door pattern including the door-only-length ones with no window equivalent (OXXX, OXXXX,
+//      OXXXXX). `OXXX-win` (previously left on the old plain-split path, an open question after
+//      batch 17) is folded into this same treatment too, as a consistency call — flagged, not
+//      independently re-confirmed.
 const SLIDING_OVERLAP_MM = 60;
+// Batch 18: flat, once-per-row addition — never per-panel or per-join. See the tuck-in
+// explanation in the block comment above.
+const SLIDING_TUCKIN_MM = 40;
 
-// Checks the preset ID (never the pattern string, which 'OX' and 'OX-win' share) to decide
-// whether the sliding-window overlap rule applies. Sliding DOORS (ids with no '-win' suffix)
-// keep the plain-split behaviour untouched — no real data exists for a door overlap rule.
-function isSlidingWinId(id) {
-  return typeof id === 'string' && id.slice(-4) === '-win';
+// Batch 18: renamed from isSlidingWinId (batch 17) — now matches ANY sliding assembly-preset id,
+// window (-win suffixed) or door (no suffix), since both now share the identical overlap/tuck-in
+// tree-building mechanism. A sliding id is recognised by its pattern being pure O/X characters
+// (mirrors detectPresetFamily's own sliding-family test) — not by an id allowlist, so this
+// automatically covers every current and future sliding door/window id without needing its own
+// maintenance when a new pattern is added to ASSEMBLY_PRESET_CATEGORIES.
+function isSlidingOverlapId(id, pattern) {
+  return typeof id === 'string' && typeof pattern === 'string' && /^[OX]+$/.test(pattern);
 }
 
-// Catalog-informed default section widths for a -win preset, given the real catalog total
-// width T. Confirmed exact formula (verified this session against every real catalog data
-// point for OX-win/OXX-win/OXXO-win, no rounding needed in any case): every O is the same
+// Catalog-informed default section widths for a sliding (door or window) preset, given the real
+// catalog total width T. Confirmed exact formula (batch 17, verified against every real catalog
+// data point for OX-win/OXX-win/OXXO-win, no rounding needed in any case): every O is the same
 // solved width, every X is exactly 60mm more, and `joins` counts only real OVERLAP joins (a
 // flush join contributes nothing to the total, so it must be excluded from the join count that
-// the 60mm-per-join term corrects for):
-//   O = (T − 60·n_X + 60·joins) / (n_O + n_X),  X = O + 60
+// the 60mm-per-join term corrects for). Batch 18 adds the flat +40mm tuck-in term, gated on
+// hasFrame (see the block comment above) — with no outer frame, T alone (no tuck-in) is the
+// right target, matching the original batch-17 formula exactly in that case:
+//   O = (T − 60·n_X + 60·joins [+ 40 if hasFrame]) / (n_O + n_X),  X = O + 60
 // Falls back to rounding O to the nearest 5mm only if the exact formula doesn't land on a clean
-// result (rare, per this session's own findings) — the existing exact-match total validation
-// then catches and prompts for whatever few-mm gap results, same as any other manually-entered
+// result (rare, per batch 17's own findings) — the existing exact-match total validation then
+// catches and prompts for whatever few-mm gap results, same as any other manually-entered
 // mismatch.
 function computeSlidingWinPrefillWidths(pattern, totalWidthMM) {
   const slideDirections = computeDefaultSlideDirections(pattern);
@@ -2742,22 +2771,28 @@ function computeSlidingWinPrefillWidths(pattern, totalWidthMM) {
   }
   const nO = pattern.split('').filter(c => c === 'O').length;
   const nX = n - nO;
-  let O = (totalWidthMM - SLIDING_OVERLAP_MM * nX + SLIDING_OVERLAP_MM * overlapJoins) / (nO + nX);
+  const tuckIn = hasFrame ? SLIDING_TUCKIN_MM : 0;
+  let O = (totalWidthMM - SLIDING_OVERLAP_MM * nX + SLIDING_OVERLAP_MM * overlapJoins + tuckIn) / (nO + nX);
   if (Math.abs(O - Math.round(O / 5) * 5) > 0.01) O = Math.round(O / 5) * 5;
   const X = O + SLIDING_OVERLAP_MM;
   return pattern.split('').map(c => c === 'O' ? O : X);
 }
 
-// The real total width a -win preset's entered section widths add up to: sum of the individual
-// panel widths minus 60mm for every real OVERLAP join (a flush join contributes nothing to
-// subtract, since flush panels don't overlap at all) — there is no mullion at any -win join, so
-// unlike every other family this total is never sectionWidths-plus-mullions.
+// The real total width (the content/opening width the row must fit inside — i.e. T, not
+// sum(panel widths)) that a sliding preset's entered section widths correspond to: sum of the
+// individual panel widths, minus 60mm for every real OVERLAP join (a flush join contributes
+// nothing to subtract, since flush panels don't overlap at all), minus the flat 40mm frame
+// tuck-in (batch 18, gated on hasFrame — see the block comment above; with no outer frame there
+// is no tuck-in to subtract, so T equals the overlap-only reduction, matching batch 17). There
+// is no mullion at any sliding-overlap join, so unlike every other family this total is never
+// sectionWidths-plus-mullions.
 function computeSlidingWinTotalWidth(pattern, sectionWidthsMM) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   let total = sectionWidthsMM.reduce((a, b) => a + b, 0);
   for (let i = 0; i < pattern.length - 1; i++) {
     if (classifySlidingWinJoin(pattern, i, slideDirections).type === 'overlap') total -= SLIDING_OVERLAP_MM;
   }
+  if (hasFrame) total -= SLIDING_TUCKIN_MM;
   return total;
 }
 
@@ -2793,16 +2828,20 @@ function classifySlidingWinJoin(pattern, i, slideDirections) {
   throw new Error('classifySlidingWinJoin: unexpected O-O adjacency at index ' + i + ' in pattern "' + pattern + '".');
 }
 
-// Builds the sliding-WINDOW overlap tree for a -win preset id. sectionWidthsMM are the entered
-// per-section widths (600/660-shaped, per the form's own prefill — but this function trusts
-// whatever was actually entered, same as every other builder; it doesn't re-derive 600/660
-// itself). Algorithm: split the pattern into maximal "overlap runs" (consecutive joins that are
-// all 'overlap', broken wherever a 'flush' join occurs), build each run as its own nested
-// sashSplit chain (left to right, tracking each step's true running total width so remSize
-// always resolves to the remainder side's own real width — verified by hand-tracing OX/OXX/XOX
-// against walk()'s actual geometry before writing this), then join separate runs together with
-// an ordinary (possibly zero-thickness) ' split' node — a flush join needs no overlap
-// consideration at all, so it can sit directly above two already-complete sub-assemblies.
+// Builds the sliding overlap tree for any sliding (door or window, batch 18) preset id.
+// sectionWidthsMM are the entered per-section widths (600/660-shaped, per the form's own
+// prefill — but this function trusts whatever was actually entered, same as every other
+// builder; it doesn't re-derive 600/660 itself). Algorithm: split the pattern into maximal
+// "overlap runs" (consecutive joins that are all 'overlap', broken wherever a 'flush' join
+// occurs), build each run as its own nested sashSplit chain (left to right, tracking each
+// step's true running total width so remSize always resolves to the remainder side's own real
+// width — verified by hand-tracing OX/OXX/XOX/OXXO against walk()'s actual geometry in batch 17,
+// and OXXXX/OXXXXX in batch 18), then join separate runs together with an ordinary (possibly
+// zero-thickness) split node — a flush join needs no overlap consideration at all, so it can sit
+// directly above two already-complete sub-assemblies. Purely pattern-driven (only ever reads
+// O/X letters, never the id string) — this is exactly why extending it from window-only (batch
+// 17) to also cover door ids (batch 18) needed no change to this function itself, only to the
+// isSlidingOverlapId gate deciding which ids reach it.
 function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
   const n = pattern.length;
   const joins = [];
@@ -2877,10 +2916,12 @@ function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
 // explicit parameter (never hardcoded 'door' in here) so a future window-only preset variant
 // can reuse this unchanged by passing 'window' instead.
 // Batch 17: `id` is an explicit optional parameter (not derived from `pattern`, since 'OX' and
-// 'OX-win' share a pattern but must not share behaviour) — when it's a -win id, the sliding
-// leaves get sashSizeMM/overlap treatment (buildSlidingWinOverlapTree) instead of the plain
-// right-to-left split fold. Sliding DOORS (id undefined, or an id with no -win suffix) fall
-// through to the original untouched fold below.
+// 'OX-win' share a pattern but must not share behaviour) — a sliding id (any pure-O/X pattern,
+// door or window, batch 18) gets sashSizeMM/overlap treatment (buildSlidingWinOverlapTree)
+// instead of the plain right-to-left split fold. This right-to-left fold below is now
+// effectively unreachable for every current sliding preset id (batch 18 extended the overlap
+// treatment to doors too) — kept in place rather than deleted, since it's still the fallback
+// for `id` undefined/non-sliding and it's cheap to keep as a defensive default.
 function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   const leaves = pattern.split('').map((ch, i) => {
@@ -2894,7 +2935,7 @@ function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, p
     return leaf;
   });
 
-  if (isSlidingWinId(id)) {
+  if (isSlidingOverlapId(id, pattern)) {
     return buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves);
   }
 
