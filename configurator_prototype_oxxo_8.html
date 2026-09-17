@@ -1972,13 +1972,15 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   // jamb/head/sill-reduced) — no separate jamb subtraction on top of rect.w, that would
   // double-count the reduction already baked into it.
   const unitWidthPrefill = (rect.w - (unitCount - 1) * mullionForPrefill) / unitCount;
-  // Top pane height: top and bottom confirmed equal, no asymmetry. +60 is the confirmed vertical
-  // meeting-rail overlap (§7.1/§7.2); +40 is the confirmed vertical frame tuck-in (top sash's top
-  // edge into the head, bottom sash's bottom edge into the sill), gated on hasFrame the same way
-  // the sliding tuck-in is gated (an existing default, reused here, not newly confirmed). rect.h
-  // is likewise already the region's own real opening-space height — no separate head/sill
-  // subtraction on top of it.
-  const topHeightPrefill = (rect.h + DOUBLE_HUNG_OVERLAP_MM + (hasFrame ? FRAME_TUCKIN_MM : 0)) / 2;
+  // Top pane height: top and bottom confirmed equal, no asymmetry. Uses getDoubleHungOverlapMM()
+  // — the SAME function that sets the actual tree node's overlapMM (batch 21) — rather than its
+  // own independent tuck-in arithmetic, which is exactly how batch 20 let this prefill and the
+  // real rendered geometry drift 40mm apart (topHeight got the full tuck-in; the actual rendered
+  // bottom pane, driven by walk()'s own remSize = h - sashSizeMM + overlapMM, got none of it,
+  // since overlapMM on the node was still the bare 60). rect.h is already the region's own real
+  // opening-space height (walk(root, 0, 0, openingW, openingH, ...) is already head/sill-
+  // reduced) — no separate subtraction needed on top of it.
+  const topHeightPrefill = (rect.h + getDoubleHungOverlapMM()) / 2;
 
   const unitWidthLabel = document.createElement('span');
   unitWidthLabel.textContent = 'Unit width (mm)';
@@ -2048,21 +2050,24 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
 // error convention as every other family if any of these don't hold.
 // Batch 19: transomThickness input/parameter removed entirely — the top/bottom division is now
 // a fixed 60mm overlap (DOUBLE_HUNG_OVERLAP_MM), not a typed transom thickness, same precedent
-// as a sliding-overlap id having no mullion input at all. Bottom-height validation is now the
+// as a sliding-overlap id having no mullion input at all. Bottom-height validation is the
 // sashSplit-equivalent of the old plain-split one: remSize = rect.h - topHeight + overlapMM
 // (mirrors walk()'s own sashSplit remSize formula exactly, not the old rect.h - topHeight -
 // transomThickness).
-// Batch 20 (Part D): the derived-bottomHeight formula gains a matching FRAME_TUCKIN_MM term when
-// hasFrame, mirroring the sliding-overlap precedent exactly (confirmAssemblyPreset's own
-// computeSlidingWinTotalWidth vs rect.w check) — traced before making this change: the tuck-in
-// is bookkeeping only, never baked into the tree's own stored geometry (sashSizeMM/overlapMM
-// come straight from what's entered, walk() renders exactly that), and the entered total is
-// deliberately allowed to exceed the real region size by the tuck-in amount when hasFrame is
-// true, representing material physically hidden inside the frame rather than rendered on
-// screen. Without this term, Part D's own topHeight=bottomHeight prefill premise would be
-// unachievable whenever hasFrame is true (topHeight and the derived bottomHeight would
-// disagree) — this closes that gap rather than leaving Part D's prefill inconsistent with what
-// this validation actually accepts.
+// Batch 21 correction: unlike the sliding tuck-in (bookkeeping-only — sashSizeMM/overlapMM on a
+// sliding node always come straight from entered panel widths, never gain a tuck-in term of
+// their own), double-hung's overlapMM IS the real, actually-rendered geometry value walk() uses
+// to compute the real bottom pane height — there is no separate "entered total allowed to
+// exceed the real span" concept here the way there is for sliding. Batch 20 wrongly treated
+// double-hung's tuck-in the same bookkeeping way: it added +40 to the topHeight PREFILL and,
+// separately, to THIS validation's own bottomHeight formula, while leaving the actual tree
+// node's overlapMM (buildDoubleHungUnit) hardcoded at the bare 60 — three independent formulas
+// that drifted apart, confirmed against real rendered output (rect.h=2330, hasFrame:true gave
+// topHeight=1215 prefilled but walk()'s real remSize = 2330-1215+60 = 1175, a 40mm mismatch).
+// Fixed by routing every one of these three formulas through the single getDoubleHungOverlapMM()
+// (batch 21) instead: this validation now computes bottomHeight the SAME way the actual tree
+// node's overlapMM is set, so it can never again believe topHeight===bottomHeight while the real
+// rendered geometry disagrees.
 function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
   const errDiv = document.getElementById('presetWidthError');
   const unitWidth = Number(document.getElementById('dhUnitWidthInput').value);
@@ -2072,8 +2077,7 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
   if (!(unitWidth > 0)) { errDiv.textContent = 'Enter a unit width greater than 0.'; return; }
   if (unitCount > 1 && !(mullionThickness > 0)) { errDiv.textContent = 'Enter a mullion thickness greater than 0.'; return; }
 
-  const verticalTuckIn = hasFrame ? FRAME_TUCKIN_MM : 0;
-  const bottomHeight = rect.h - topHeight + DOUBLE_HUNG_OVERLAP_MM + verticalTuckIn;
+  const bottomHeight = rect.h - topHeight + getDoubleHungOverlapMM();
   if (!(topHeight >= MIN_PANE_MM) || !(bottomHeight >= MIN_PANE_MM)) {
     errDiv.textContent = 'Top height ' + Math.round(topHeight) + 'mm and derived bottom height ' +
       Math.round(bottomHeight) + 'mm (region height ' + Math.round(rect.h) + 'mm minus top height ' +
@@ -3065,9 +3069,23 @@ function buildAwningPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, pro
 // overlapping by overlapMM), sized remSize — exactly matching the existing plain-split
 // convention where children[0] was already '.T' (top) and children[1] was '.B' (bottom).
 const DOUBLE_HUNG_OVERLAP_MM = 60;
+// Batch 21: single source of truth for double-hung's real overlapMM value — the 60mm meeting-
+// rail overlap, plus the 40mm vertical frame tuck-in when hasFrame is true. Reads hasFrame as a
+// global directly (no parameter), matching the existing convention already used elsewhere in
+// this codebase (confirmDoubleHungPreset's own hasFrame check, computeSlidingWinTotalWidth/
+// PrefillWidths) rather than introducing a third pattern of threading it through explicitly.
+// Batch 20 bug this closes: overlapMM on the actual tree node was hardcoded to the bare
+// DOUBLE_HUNG_OVERLAP_MM with no tuck-in awareness, while the topHeight PREFILL and a separate,
+// disconnected validation-only formula both independently added the tuck-in — three formulas
+// that could (and did) drift apart. walk()'s own sashSplit remSize geometry (unmodified) is what
+// actually determines the rendered bottom pane height; every caller that needs double-hung's
+// overlap value now goes through this one function so they can never diverge again.
+function getDoubleHungOverlapMM() {
+  return DOUBLE_HUNG_OVERLAP_MM + (hasFrame ? FRAME_TUCKIN_MM : 0);
+}
 function buildDoubleHungUnit(productClass, topHeightMM) {
   return {
-    kind: 'sashSplit', axis: 'h', fromEdge: 'start', sashSizeMM: topHeightMM, overlapMM: DOUBLE_HUNG_OVERLAP_MM,
+    kind: 'sashSplit', axis: 'h', fromEdge: 'start', sashSizeMM: topHeightMM, overlapMM: getDoubleHungOverlapMM(),
     children: [
       { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
         sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM },
