@@ -1975,20 +1975,9 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   row.appendChild(topHeightLabel);
   row.appendChild(topHeightInput);
 
-  const transomLabel = document.createElement('span');
-  transomLabel.textContent = 'Transom thickness (mm)';
-  const transomInput = document.createElement('input');
-  transomInput.type = 'number';
-  transomInput.id = 'dhTransomInput';
-  // Batch 16: deliberately NOT given a catalog/frame-derived prefill in this batch — there is
-  // currently no vertically-stacked preset in the real tool for a "transom = head width" rule
-  // to have a natural counterpart against (unlike the horizontal mullion below, which has the
-  // jamb-width precedent from every horizontal-row family). Once a vertically-stacked preset
-  // exists, the transom prefill should equal the frame's head width, same pattern as the
-  // mullion-from-jamb rule here — noted so it isn't forgotten, not built now.
-  transomInput.value = 45;
-  row.appendChild(transomLabel);
-  row.appendChild(transomInput);
+  // Batch 19: "Transom thickness" input removed entirely — the top/bottom division is now a
+  // fixed 60mm overlap (DOUBLE_HUNG_OVERLAP_MM), not a typed transom, so there's nothing to
+  // enter here, same precedent as a sliding-overlap id having no mullion input at all (§2.9).
 
   // Only shown for more than one unit — with a single unit (D) there's no mullion to size.
   if (unitCount > 1) {
@@ -2034,22 +2023,26 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
 // width (same exact-match convention as everywhere else), AND top height / derived bottom
 // height must each be >= MIN_PANE_MM, AND transom thickness > 0 — blocking inline with the same
 // error convention as every other family if any of these don't hold.
+// Batch 19: transomThickness input/parameter removed entirely — the top/bottom division is now
+// a fixed 60mm overlap (DOUBLE_HUNG_OVERLAP_MM), not a typed transom thickness, same precedent
+// as a sliding-overlap id having no mullion input at all. Bottom-height validation is now the
+// sashSplit-equivalent of the old plain-split one: remSize = rect.h - topHeight + overlapMM
+// (mirrors walk()'s own sashSplit remSize formula exactly, not the old rect.h - topHeight -
+// transomThickness).
 function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
   const errDiv = document.getElementById('presetWidthError');
   const unitWidth = Number(document.getElementById('dhUnitWidthInput').value);
   const topHeight = Number(document.getElementById('dhTopHeightInput').value);
-  const transomThickness = Number(document.getElementById('dhTransomInput').value);
   const mullionThickness = unitCount > 1 ? Number(document.getElementById('dhMullionInput').value) : 0;
 
   if (!(unitWidth > 0)) { errDiv.textContent = 'Enter a unit width greater than 0.'; return; }
-  if (!(transomThickness > 0)) { errDiv.textContent = 'Enter a transom thickness greater than 0.'; return; }
   if (unitCount > 1 && !(mullionThickness > 0)) { errDiv.textContent = 'Enter a mullion thickness greater than 0.'; return; }
 
-  const bottomHeight = rect.h - topHeight - transomThickness;
+  const bottomHeight = rect.h - topHeight + DOUBLE_HUNG_OVERLAP_MM;
   if (!(topHeight >= MIN_PANE_MM) || !(bottomHeight >= MIN_PANE_MM)) {
     errDiv.textContent = 'Top height ' + Math.round(topHeight) + 'mm and derived bottom height ' +
-      Math.round(bottomHeight) + 'mm (region height ' + Math.round(rect.h) + 'mm minus transom ' +
-      Math.round(transomThickness) + 'mm) must each be at least ' + MIN_PANE_MM + 'mm.';
+      Math.round(bottomHeight) + 'mm (region height ' + Math.round(rect.h) + 'mm minus top height ' +
+      'plus the ' + DOUBLE_HUNG_OVERLAP_MM + 'mm overlap) must each be at least ' + MIN_PANE_MM + 'mm.';
     return;
   }
 
@@ -2070,13 +2063,20 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
     ? { hingeEdge: targetNode.hingeEdge || 'left' }
     : (existingAncestor ? existingAncestor.hingedDoorRef : null);
 
-  const tree = buildDoubleHungPresetTree(pattern, unitWidth, topHeight, transomThickness, mullionThickness, productClass);
-  if (carriedHingedDoorRef && tree.kind === 'split') tree.hingedDoorRef = carriedHingedDoorRef;
+  const tree = buildDoubleHungPresetTree(pattern, unitWidth, topHeight, mullionThickness, productClass);
+  // Batch 19: a single-unit (D) preset's top-level node is now directly the sashSplit itself —
+  // buildDoubleHungPresetTree/foldSectionsIntoSplits never wraps a single leaf in a plain split
+  // (the fold loop simply doesn't run for length-1 input), so tree.kind === 'split' alone would
+  // silently miss it here exactly the way batch 17 found for single-run sliding-overlap ids.
+  // Multi-unit (DD/DDD) trees still get a real wrapping split (multiple units joined by a real
+  // mullion), so this specifically matters for D — verified both cases before trusting this.
+  const isMarkableTree = tree.kind === 'split' || tree.kind === 'sashSplit';
+  if (carriedHingedDoorRef && isMarkableTree) tree.hingedDoorRef = carriedHingedDoorRef;
   // Same assemblyPresetRef marker as every other family — { pattern, productClass }, no
   // `family` field (detectPresetFamily re-derives it on any future lookup). Note this batch
   // deliberately never offers "Edit assembly widths" for this marker (see
   // appendEditAssemblyWidthsButton) even though the marker itself is stamped identically.
-  if (tree.kind === 'split') tree.assemblyPresetRef = { pattern, productClass };
+  if (isMarkableTree) tree.assemblyPresetRef = { pattern, productClass };
   setNode(pendingSplit.path, tree);
   pendingSplit = null;
   selected = null;
@@ -2999,22 +2999,28 @@ function buildAwningPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, pro
 // Batch 14 — double-hung preset tree. The first family whose "sections" aren't flat leaves:
 // each unit is its own two-level subtree — an h-axis split into a top vertical-slider (slides
 // down) and a bottom vertical-slider (slides up), converging toward each other at the shared
-// transom. foldSectionsIntoSplits doesn't care what shape each "leaf" is (a plain filled node
-// for every other family, a whole subtree here) — it only ever folds nodes by their own outer
-// width, so passing these unit-subtrees straight in as `leaves` reuses that fold exactly as-is.
-// unitWidthMM/topHeightMM/transomThicknessMM/mullionThicknessMM are uniform across every unit,
-// per this family's own spec (unlike casement, which allows independent per-section widths).
-// Batch 16: deliberately NOT given the PRESET_SASH_EDGES (60/60/60/86) treatment applied to
-// casement/awning above — a double-hung sash's meeting-rail edge (bottom of the top sash, top
-// of the bottom sash) should be 60mm rather than the general 86mm-bottom pattern once the
-// double-hung internal-overlap structural batch lands (kind:'sashSplit' replacing the plain
-// kind:'split' transom below). That batch had not landed in this working tree when this was
-// written, so applying any per-edge shape here now would mean guessing at which edge is the
-// "outer" vs "meeting" one — skipped rather than silently resolved. Still uniform
-// DEFAULT_SASH_MM on all four edges, unchanged from batch 14.
-function buildDoubleHungUnit(productClass, topHeightMM, transomThicknessMM) {
+// meeting rail. foldSectionsIntoSplits doesn't care what shape each "leaf" is (a plain filled
+// node for every other family, a whole subtree here) — it only ever folds nodes by their own
+// outer width, so passing these unit-subtrees straight in as `leaves` reuses that fold exactly
+// as-is. unitWidthMM/topHeightMM/mullionThicknessMM are uniform across every unit, per this
+// family's own spec (unlike casement, which allows independent per-section widths).
+//
+// Batch 19: the internal top/bottom division is a real 60mm overlap (sashSplit), not the plain
+// transom this used to build — the top sash's own bottom rail and the bottom sash's own top
+// rail genuinely interlock, the same way a sliding assembly's overlap has no separate member
+// (§7.1). Per-edge sash-shape UI work (which edge is the "meeting rail" 60mm vs "outer" general
+// pattern) is deliberately still deferred to its own later batch — this batch is the structural
+// conversion only, still uniform DEFAULT_SASH_MM on all four edges, unchanged from batch 14.
+// fromEdge:'start' puts children[0] (the top leaf, slideDirection:'down') at the sash position —
+// verified against walk()'s actual sashSplit axis:'h' geometry (not assumed by analogy to the
+// vertical-slider top/bottom convention): fromEdge:'start' places children[0] at the smaller y
+// (top of the region) sized sashSizeMM, and children[1] at y+sashSizeMM-overlapMM (below it,
+// overlapping by overlapMM), sized remSize — exactly matching the existing plain-split
+// convention where children[0] was already '.T' (top) and children[1] was '.B' (bottom).
+const DOUBLE_HUNG_OVERLAP_MM = 60;
+function buildDoubleHungUnit(productClass, topHeightMM) {
   return {
-    kind: 'split', axis: 'h', posMM: topHeightMM, thicknessMM: transomThicknessMM,
+    kind: 'sashSplit', axis: 'h', fromEdge: 'start', sashSizeMM: topHeightMM, overlapMM: DOUBLE_HUNG_OVERLAP_MM,
     children: [
       { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
         sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM },
@@ -3023,10 +3029,13 @@ function buildDoubleHungUnit(productClass, topHeightMM, transomThicknessMM) {
     ]
   };
 }
-function buildDoubleHungPresetTree(pattern, unitWidthMM, topHeightMM, transomThicknessMM, mullionThicknessMM, productClass) {
+// Batch 19: transomThicknessMM parameter removed — there's nothing to type or pass through, the
+// overlap is a fixed DOUBLE_HUNG_OVERLAP_MM, same precedent as a sliding-overlap id having no
+// mullion parameter at all (§2.9).
+function buildDoubleHungPresetTree(pattern, unitWidthMM, topHeightMM, mullionThicknessMM, productClass) {
   const unitCount = DOUBLE_HUNG_UNIT_COUNTS[pattern];
   const units = [];
-  for (let i = 0; i < unitCount; i++) units.push(buildDoubleHungUnit(productClass, topHeightMM, transomThicknessMM));
+  for (let i = 0; i < unitCount; i++) units.push(buildDoubleHungUnit(productClass, topHeightMM));
   const unitWidths = new Array(unitCount).fill(unitWidthMM);
   return foldSectionsIntoSplits(units, unitWidths, mullionThicknessMM);
 }
@@ -3036,8 +3045,8 @@ function buildDoubleHungPresetTree(pattern, unitWidthMM, topHeightMM, transomThi
 // buildAssemblyPresetTree (sliding, O/X) is untouched; this just routes to it or the two new
 // family builders above based on `family`. Batch 14: double-hung is NOT routed through here —
 // its confirm form and confirmAssemblyPreset call site build its tree directly via
-// buildDoubleHungPresetTree, since its inputs (unit width/height/transom/mullion) don't fit
-// this dispatcher's (pattern, sectionWidthsMM, mullionThicknessMM, productClass) shape.
+// buildDoubleHungPresetTree, since its inputs (unit width/height/mullion) don't fit this
+// dispatcher's (pattern, sectionWidthsMM, mullionThicknessMM, productClass) shape.
 // Batch 17: `id` threaded through as an explicit optional last parameter, used only by the
 // sliding (O/X) branch — casement/awning ids never carry -win-style suffix semantics.
 function buildPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, family, id) {
