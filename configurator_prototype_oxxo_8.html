@@ -1806,20 +1806,20 @@ function renderAssemblyPresetForm(bar, rect) {
   // whatever this batch's predecessor already left them (blank), matching the required fallback.
   if (!isEditing && pendingSplit.widths == null && pendingSplit.chosenPreset.id != null) {
     const match = findClosestCatalogSize(pendingSplit.chosenPreset.id, rect.h, rect.w);
-    if (match) {
-      // Batch 17: a -win id's sections are never equal widths (O is always 600mm, X is always
-      // 660mm) — use the O/X-solving formula against the matched catalog total instead of the
-      // generic equal-split every other family/id uses.
-      pendingSplit.widths = isSlidingOverlapId(id, pattern)
-        ? computeSlidingWinPrefillWidths(pattern, match.widthMM)
-        : new Array(sectionCount).fill(match.widthMM / sectionCount);
+    // Batch 20: a sliding-overlap id's prefill must solve against the REAL selected region width
+    // (rect.w) — not the matched catalog entry's own stated total, and not a hardcoded 600/660
+    // fallback when no catalog entry exists. The catalog total and the region's actual width are
+    // two different things (that's exactly why the exact-match validation used to block
+    // confirmation afterward — the validation was always correct, this prefill was feeding it
+    // the wrong number). `match`/`matchedCatalogSize` is still computed and stored for its own
+    // "closest standard size" info-line display (batch 15) — just no longer used to DRIVE the
+    // prefilled widths for a sliding-overlap id.
+    if (isSlidingOverlapId(id, pattern)) {
+      pendingSplit.widths = computeSlidingWinPrefillWidths(pattern, rect.w, hasFrame);
+      if (match) pendingSplit.matchedCatalogSize = match;
+    } else if (match) {
+      pendingSplit.widths = new Array(sectionCount).fill(match.widthMM / sectionCount);
       pendingSplit.matchedCatalogSize = match;
-    } else if (isSlidingOverlapId(id, pattern)) {
-      // Batch 17: XOX-win has no catalog entry at all (confirmed — never appears as a key in
-      // ASSEMBLY_PRESET_CATALOG_SIZES). Rather than leaving the inputs blank (the existing
-      // fallback for a no-catalog-entry id), prefill with the plain 600/660 defaults directly —
-      // there's no real total to solve against, but the panel widths themselves are still known.
-      pendingSplit.widths = pattern.split('').map(c => c === 'O' ? 600 : 660);
     }
   }
 
@@ -1959,11 +1959,33 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   const row = document.createElement('div');
   row.className = 'inline-form';
 
+  // Batch 20 (Part D): auto-prefill both fields on fresh creation, same "prefill only, stays
+  // editable, existing exact-match validation still catches anything changed afterward"
+  // convention as every other prefill in this project (batch 15/16). `mullionForPrefill` is
+  // computed here (before the mullion <input> itself is created further down) purely so the
+  // width formula below can use it — unitCount:1 has no real mullion at all (0, matching the
+  // "no mullion to size" comment on that input's own conditional), unitCount>1 uses the same
+  // jamb-width prefill value getMullionPrefillMM() already returns for the mullion field itself.
+  const mullionForPrefill = unitCount > 1 ? getMullionPrefillMM() : 0;
+  // Unit width: rect.w is already the region's own real available width in opening-space (the
+  // whole tree is built via walk(root, 0, 0, openingW, openingH, ...), which is already
+  // jamb/head/sill-reduced) — no separate jamb subtraction on top of rect.w, that would
+  // double-count the reduction already baked into it.
+  const unitWidthPrefill = (rect.w - (unitCount - 1) * mullionForPrefill) / unitCount;
+  // Top pane height: top and bottom confirmed equal, no asymmetry. +60 is the confirmed vertical
+  // meeting-rail overlap (§7.1/§7.2); +40 is the confirmed vertical frame tuck-in (top sash's top
+  // edge into the head, bottom sash's bottom edge into the sill), gated on hasFrame the same way
+  // the sliding tuck-in is gated (an existing default, reused here, not newly confirmed). rect.h
+  // is likewise already the region's own real opening-space height — no separate head/sill
+  // subtraction on top of it.
+  const topHeightPrefill = (rect.h + DOUBLE_HUNG_OVERLAP_MM + (hasFrame ? FRAME_TUCKIN_MM : 0)) / 2;
+
   const unitWidthLabel = document.createElement('span');
   unitWidthLabel.textContent = 'Unit width (mm)';
   const unitWidthInput = document.createElement('input');
   unitWidthInput.type = 'number';
   unitWidthInput.id = 'dhUnitWidthInput';
+  unitWidthInput.value = unitWidthPrefill;
   row.appendChild(unitWidthLabel);
   row.appendChild(unitWidthInput);
 
@@ -1972,6 +1994,7 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   const topHeightInput = document.createElement('input');
   topHeightInput.type = 'number';
   topHeightInput.id = 'dhTopHeightInput';
+  topHeightInput.value = topHeightPrefill;
   row.appendChild(topHeightLabel);
   row.appendChild(topHeightInput);
 
@@ -2029,6 +2052,17 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
 // sashSplit-equivalent of the old plain-split one: remSize = rect.h - topHeight + overlapMM
 // (mirrors walk()'s own sashSplit remSize formula exactly, not the old rect.h - topHeight -
 // transomThickness).
+// Batch 20 (Part D): the derived-bottomHeight formula gains a matching FRAME_TUCKIN_MM term when
+// hasFrame, mirroring the sliding-overlap precedent exactly (confirmAssemblyPreset's own
+// computeSlidingWinTotalWidth vs rect.w check) — traced before making this change: the tuck-in
+// is bookkeeping only, never baked into the tree's own stored geometry (sashSizeMM/overlapMM
+// come straight from what's entered, walk() renders exactly that), and the entered total is
+// deliberately allowed to exceed the real region size by the tuck-in amount when hasFrame is
+// true, representing material physically hidden inside the frame rather than rendered on
+// screen. Without this term, Part D's own topHeight=bottomHeight prefill premise would be
+// unachievable whenever hasFrame is true (topHeight and the derived bottomHeight would
+// disagree) — this closes that gap rather than leaving Part D's prefill inconsistent with what
+// this validation actually accepts.
 function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
   const errDiv = document.getElementById('presetWidthError');
   const unitWidth = Number(document.getElementById('dhUnitWidthInput').value);
@@ -2038,11 +2072,14 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
   if (!(unitWidth > 0)) { errDiv.textContent = 'Enter a unit width greater than 0.'; return; }
   if (unitCount > 1 && !(mullionThickness > 0)) { errDiv.textContent = 'Enter a mullion thickness greater than 0.'; return; }
 
-  const bottomHeight = rect.h - topHeight + DOUBLE_HUNG_OVERLAP_MM;
+  const verticalTuckIn = hasFrame ? FRAME_TUCKIN_MM : 0;
+  const bottomHeight = rect.h - topHeight + DOUBLE_HUNG_OVERLAP_MM + verticalTuckIn;
   if (!(topHeight >= MIN_PANE_MM) || !(bottomHeight >= MIN_PANE_MM)) {
     errDiv.textContent = 'Top height ' + Math.round(topHeight) + 'mm and derived bottom height ' +
       Math.round(bottomHeight) + 'mm (region height ' + Math.round(rect.h) + 'mm minus top height ' +
-      'plus the ' + DOUBLE_HUNG_OVERLAP_MM + 'mm overlap) must each be at least ' + MIN_PANE_MM + 'mm.';
+      'plus the ' + DOUBLE_HUNG_OVERLAP_MM + 'mm overlap' +
+      (hasFrame ? ' plus the ' + FRAME_TUCKIN_MM + 'mm frame tuck-in' : '') +
+      ') must each be at least ' + MIN_PANE_MM + 'mm.';
     return;
   }
 
@@ -2736,8 +2773,12 @@ function renderIconForPreset(pattern, family) {
 //      independently re-confirmed.
 const SLIDING_OVERLAP_MM = 60;
 // Batch 18: flat, once-per-row addition — never per-panel or per-join. See the tuck-in
-// explanation in the block comment above.
-const SLIDING_TUCKIN_MM = 40;
+// explanation in the block comment above. Batch 20 (Part D): renamed from SLIDING_TUCKIN_MM —
+// the same 20mm-per-frame-touching-edge figure also applies vertically to double-hung's top/
+// bottom prefill (§7.2's "for the purpose of this configurator" confirmation), so this constant
+// is no longer sliding-specific even though its value and physical reasoning (20mm per edge that
+// touches the outer frame) originated there.
+const FRAME_TUCKIN_MM = 40;
 
 // Batch 18: renamed from isSlidingWinId (batch 17) — now matches ANY sliding assembly-preset id,
 // window (-win suffixed) or door (no suffix), since both now share the identical overlap/tuck-in
@@ -2762,7 +2803,13 @@ function isSlidingOverlapId(id, pattern) {
 // result (rare, per batch 17's own findings) — the existing exact-match total validation then
 // catches and prompts for whatever few-mm gap results, same as any other manually-entered
 // mismatch.
-function computeSlidingWinPrefillWidths(pattern, totalWidthMM) {
+// Batch 20: `hasFrameFlag` is now an explicit parameter (defaults to the global `hasFrame` when
+// omitted, so every pre-existing call site that relied on the implicit global read keeps working
+// unchanged) rather than only ever reading the global directly — makes the tuck-in gating
+// testable/traceable against an explicit value without depending on global state, and matches
+// this batch's own call site, which passes it explicitly.
+function computeSlidingWinPrefillWidths(pattern, totalWidthMM, hasFrameFlag) {
+  const useFrame = hasFrameFlag === undefined ? hasFrame : hasFrameFlag;
   const slideDirections = computeDefaultSlideDirections(pattern);
   const n = pattern.length;
   let overlapJoins = 0;
@@ -2771,7 +2818,7 @@ function computeSlidingWinPrefillWidths(pattern, totalWidthMM) {
   }
   const nO = pattern.split('').filter(c => c === 'O').length;
   const nX = n - nO;
-  const tuckIn = hasFrame ? SLIDING_TUCKIN_MM : 0;
+  const tuckIn = useFrame ? FRAME_TUCKIN_MM : 0;
   let O = (totalWidthMM - SLIDING_OVERLAP_MM * nX + SLIDING_OVERLAP_MM * overlapJoins + tuckIn) / (nO + nX);
   if (Math.abs(O - Math.round(O / 5) * 5) > 0.01) O = Math.round(O / 5) * 5;
   const X = O + SLIDING_OVERLAP_MM;
@@ -2792,7 +2839,7 @@ function computeSlidingWinTotalWidth(pattern, sectionWidthsMM) {
   for (let i = 0; i < pattern.length - 1; i++) {
     if (classifySlidingWinJoin(pattern, i, slideDirections).type === 'overlap') total -= SLIDING_OVERLAP_MM;
   }
-  if (hasFrame) total -= SLIDING_TUCKIN_MM;
+  if (hasFrame) total -= FRAME_TUCKIN_MM;
   return total;
 }
 
