@@ -184,8 +184,19 @@ function getSashEdges(node) {
 }
 // Sets all four per-edge sash fields to the same value — used by the single-input toolbar
 // field, which is the only way to edit sash frame width in this batch.
+// Batch 23: skips any edge whose matching sash*Locked flag is true (see the unframed-joint
+// mechanism below) — a locked edge belongs to a genuine silicone joint and must stay at 0
+// regardless of what this uniform input is set to; only unlocked edges are touched. Named to
+// match the existing sashTopMM/sashBottomMM/sashLeftMM/sashRightMM per-edge convention exactly
+// (sashTopLocked/sashBottomLocked/sashLeftLocked/sashRightLocked), rather than a differently-
+// shaped parallel structure (e.g. a lockedEdges array/set).
 function withUniformSashMM(node, mm) {
-  return { ...node, sashTopMM: mm, sashBottomMM: mm, sashLeftMM: mm, sashRightMM: mm };
+  const next = { ...node };
+  if (!node.sashTopLocked) next.sashTopMM = mm;
+  if (!node.sashBottomLocked) next.sashBottomMM = mm;
+  if (!node.sashLeftLocked) next.sashLeftMM = mm;
+  if (!node.sashRightLocked) next.sashRightMM = mm;
+  return next;
 }
 
 function emptyNode() { return { kind: 'empty' }; }
@@ -275,6 +286,13 @@ function setNode(path, newNode) {
   for (let i = 0; i < path.length - 1; i++) node = node.children[path[i]];
   node.children[path[path.length - 1]] = newNode;
 }
+// Batch 23: deliberately does NOT carry over any sash*Locked flag — a fresh clone always starts
+// fully unlocked, for both existing call sites' actual intent: (1) confirmSplit's two brand-new
+// children were never adjacent to a joint before being split, so nothing to lock; (2) "Remove
+// this split"'s collapse-to-children[0] must clear any lock on the surviving leaf, per the
+// unframed-joint removal requirement — reusing this same generic function does that for free,
+// with no joint-specific removal code needed. confirmUnframedJoint (below) applies its own lock
+// explicitly, after cloning, rather than through this function.
 function cloneForSplit(node) {
   if (node.kind === 'filled') {
     return {
@@ -1341,6 +1359,49 @@ function renderToolbar() {
       return;
     }
 
+    if (pendingSplit.mode === 'unframed') {
+      // Batch 23: an unframed silicone joint still needs a position (where along the region it
+      // sits), same as mullion/transom — the only thing genuinely different is there's no
+      // thickness input at all (always 0mm, not merely defaulted to 0) and an explicit axis
+      // choice is needed up front, since (unlike mullion/transom) this isn't offered as two
+      // separate axis-committed buttons.
+      const row = document.createElement('div');
+      row.className = 'inline-form';
+      row.innerHTML =
+        '<span>Direction</span>' +
+        '<select id="unframedAxisSelect">' +
+          '<option value="v">Vertical (side by side)</option>' +
+          '<option value="h">Horizontal (stacked)</option>' +
+        '</select>' +
+        '<span>Distance to joint centre (mm)</span>' +
+        '<input type="number" id="unframedPosInput" value="' + Math.round(rect.w / 2) + '">' +
+        '<span style="color:var(--text-dim);font-size:12px;">Available here: ' + Math.round(rect.w) + ' × ' + Math.round(rect.h) + 'mm</span>';
+      bar.appendChild(row);
+      const axisSelect = row.querySelector('#unframedAxisSelect');
+      const posInput = row.querySelector('#unframedPosInput');
+      axisSelect.addEventListener('change', () => {
+        const a = axisSelect.value;
+        posInput.value = Math.round((a === 'v' ? rect.w : rect.h) / 2);
+      });
+      const btnRow = document.createElement('div');
+      btnRow.className = 'toolbar-row';
+      const confirmBtn = document.createElement('button');
+      confirmBtn.textContent = 'Confirm joint';
+      confirmBtn.onclick = () => confirmUnframedJoint(rect);
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'secondary';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = () => { pendingSplit = null; render(); };
+      btnRow.appendChild(confirmBtn);
+      btnRow.appendChild(cancelBtn);
+      bar.appendChild(btnRow);
+      const errDiv = document.createElement('div');
+      errDiv.id = 'splitError';
+      errDiv.className = 'error';
+      bar.appendChild(errDiv);
+      return;
+    }
+
     const axis = pendingSplit.mode === 'mullion' ? 'v' : 'h';
     const axisLabel = axis === 'v' ? 'mullion' : 'transom';
     const available = axis === 'v' ? rect.w : rect.h;
@@ -1390,6 +1451,12 @@ function renderToolbar() {
   const sashBtn = document.createElement('button');
   sashBtn.textContent = 'Add sash (overlap)';
   sashBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'sash' }; render(); };
+  // Batch 23: a real, separate toolbar button — not a checkbox on an existing one, per the
+  // addendum's own confirmed UI decision. Same selection-then-split interaction pattern as
+  // mullion/transom/sash above.
+  const unframedBtn = document.createElement('button');
+  unframedBtn.textContent = 'Add unframed joint (silicone)';
+  unframedBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'unframed' }; render(); };
   const presetBtn = document.createElement('button');
   presetBtn.textContent = 'Apply assembly preset';
   // Batch 10: presets always include horizontal-slider sections, already disallowed as a
@@ -1404,6 +1471,7 @@ function renderToolbar() {
   row1.appendChild(mullionBtn);
   row1.appendChild(transomBtn);
   row1.appendChild(sashBtn);
+  row1.appendChild(unframedBtn);
   row1.appendChild(presetBtn);
   bar.appendChild(row1);
 
@@ -2457,6 +2525,81 @@ function confirmSplit(axis, rect) {
   // split door just drew its own individual symbol. Fix: stamp the split node itself with a
   // hingedDoorRef marker whenever the node being split either IS a hinged door panel, or was
   // itself already inside one (so nesting deeper than one level still propagates correctly).
+  const existingAncestor = findHingedDoorAncestor(pendingSplit.path);
+  const carriedHingedDoorRef = (node.kind === 'filled' && node.productClass === 'door' && node.type === 'hinged')
+    ? { hingeEdge: node.hingeEdge || 'left' }
+    : (existingAncestor ? existingAncestor.hingedDoorRef : null);
+  if (carriedHingedDoorRef) newSplit.hingedDoorRef = carriedHingedDoorRef;
+  setNode(pendingSplit.path, newSplit);
+  pendingSplit = null;
+  selected = null;
+  render();
+}
+
+// Batch 23 — unframed silicone butt-joint (flat, same-elevation case only; the addendum's Case
+// 1, angled/multi-elevation, is explicitly parked and not touched by this function at all).
+//
+// This is genuinely different from the two existing zero-thickness split mechanisms already in
+// the codebase (casement's no-mullion toggle, sliding's flush joins): in both of those, each
+// side still keeps its own sash stile on the touching edge — they just have no separate member
+// between them. Here, the sash stile on the touching edge of BOTH adjacent panes is also
+// removed. That distinction must survive in the data, not just look the same on screen — AS 1288
+// treats a genuine silicone joint differently from ordinary (even zero-thickness) framing, and a
+// future export/compliance layer reading this tree later needs to tell the two apart without
+// guessing from a coincidentally-zero thicknessMM. So this function does two things neither
+// existing zero-thickness mechanism does:
+//   1. Stamps the new split node with isSiliconeJoint:true (same "stamp an explicit marker on
+//      the split node" convention already used for hingedDoorRef/assemblyPresetRef — checked
+//      those before choosing this shape rather than inventing an unrelated pattern).
+//   2. Zeroes AND LOCKS the specific touching edge on each of the two new children (right edge
+//      of children[0] / left edge of children[1] for axis:'v'; bottom edge of children[0] / top
+//      edge of children[1] for axis:'h' — matching walk()'s own existing .L/.R and .T/.B
+//      ordering). Locking matters because withUniformSashMM (the only thing the manual "Sash
+//      frame width" toolbar input calls) would otherwise silently un-zero this edge the next
+//      time someone used that box for an unrelated reason — locked edges are skipped by it (see
+//      withUniformSashMM's own batch-23 comment). This works for any pane type on either side,
+//      not just 'fixed' (which already has zero sash everywhere and would make locking a no-op)
+//      — a fixed-framed, hinged, or slider pane keeps its normal sash on its other three edges,
+//      only the touching edge is zeroed/locked.
+// Removal reuses the existing generic "Remove this split" mechanism unchanged (see
+// cloneForSplit's own batch-23 comment) — cloneForSplit never carries over a sash*Locked flag,
+// so collapsing back to children[0] already restores that edge to normal/editable/unlocked with
+// no joint-specific removal code needed here at all.
+function confirmUnframedJoint(rect) {
+  const errDiv = document.getElementById('splitError');
+  const axisSelect = document.getElementById('unframedAxisSelect');
+  const axis = axisSelect ? axisSelect.value : 'v';
+  const pos = Number(document.getElementById('unframedPosInput').value);
+  const available = axis === 'v' ? rect.w : rect.h;
+  // thicknessMM is always exactly 0 here (not merely defaulted to 0) — a genuine silicone joint
+  // has no member at all, so firstSize/secondSize split the available space at `pos` directly
+  // with no thickness term, unlike confirmSplit's thickness-aware firstSize/secondSize.
+  const firstSize = pos;
+  const secondSize = available - pos;
+  if (!(pos > 0) || !(firstSize >= MIN_PANE_MM) || !(secondSize >= MIN_PANE_MM)) {
+    errDiv.textContent = 'That position leaves ' + Math.round(firstSize) + 'mm on one side and ' +
+      Math.round(secondSize) + 'mm on the other. Available here is ' + Math.round(available) +
+      'mm — each side needs at least ' + MIN_PANE_MM + 'mm. Adjust the position.';
+    return;
+  }
+  const node = getNode(pendingSplit.path);
+  const childA = cloneForSplit(node);
+  const childB = cloneForSplit(node);
+  // Zero + lock only the specific touching edge on each side — every other edge (including a
+  // fixed-framed/hinged/slider pane's normal sash on its remaining three sides) is left exactly
+  // as cloneForSplit already set it.
+  if (axis === 'v') {
+    childA.sashRightMM = 0; childA.sashRightLocked = true;
+    childB.sashLeftMM = 0; childB.sashLeftLocked = true;
+  } else {
+    childA.sashBottomMM = 0; childA.sashBottomLocked = true;
+    childB.sashTopMM = 0; childB.sashTopLocked = true;
+  }
+  const newSplit = {
+    kind: 'split', axis, posMM: pos, thicknessMM: 0,
+    isSiliconeJoint: true,
+    children: [childA, childB]
+  };
   const existingAncestor = findHingedDoorAncestor(pendingSplit.path);
   const carriedHingedDoorRef = (node.kind === 'filled' && node.productClass === 'door' && node.type === 'hinged')
     ? { hingeEdge: node.hingeEdge || 'left' }
