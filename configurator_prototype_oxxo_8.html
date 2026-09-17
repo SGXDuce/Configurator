@@ -1744,6 +1744,15 @@ function renderAssemblyPresetForm(bar, rect) {
           // preset with no catalog entry at all would otherwise leave the previous preset's
           // stale "Closest standard size" line showing.
           pendingSplit.matchedCatalogSize = null;
+          // Batch 22: casement genuinely supports true butt-joint construction (confirmed — no
+          // reference drawing shows a mullion at all), so a fresh casement selection needs an
+          // explicit include/exclude-mullion choice before the width form renders. Stated
+          // default, not independently re-confirmed word for word: defaults to false ("No") on
+          // fresh selection, matching what every actual casement reference drawing shows as the
+          // norm — easy to challenge/flip later if this default turns out wrong. Awning always
+          // has a real mullion/transom (confirmed, no toggle) — this field is simply irrelevant
+          // and unused for every other family.
+          if (category.family === 'casement') pendingSplit.includeMullion = false;
           render();
         };
         iconRow.appendChild(btn);
@@ -1786,6 +1795,39 @@ function renderAssemblyPresetForm(bar, rect) {
     return;
   }
 
+  // Batch 22: casement's include/exclude-mullion choice, shown immediately after a casement
+  // preset is selected and before the section width inputs render — fresh creation only (this
+  // doesn't interact with the reopen mechanism at all). Awning always has a real mullion/transom
+  // (confirmed, §7.1) — no toggle for it, this block simply never renders for that family.
+  // pendingSplit.includeMullion defaults to false on fresh selection (see the picker's own
+  // click handler) — a stated default, not independently re-confirmed word for word.
+  // isEditing always resolves to includeMullion:true regardless of family — reopen ("Edit
+  // assembly widths") never uses this toggle concept at all, it reads the mullion input's
+  // visibility/value straight from live tree state (getAssemblyPresetCurrentState) the same way
+  // it always has; pendingSplit.includeMullion is never set on an edit-mode pendingSplit, so
+  // treating it as false there (the fresh-creation default) would incorrectly hide the mullion
+  // input for an existing casement preset that genuinely has a real mullion between sections.
+  const isCasement = family === 'casement';
+  const includeMullion = (isCasement && !isEditing) ? !!pendingSplit.includeMullion : true;
+  if (!isEditing && isCasement) {
+    const toggleRow = document.createElement('div');
+    toggleRow.className = 'toolbar-row';
+    const toggleLabel = document.createElement('span');
+    toggleLabel.textContent = 'Include mullions between sashes?';
+    const yesBtn = document.createElement('button');
+    yesBtn.className = includeMullion ? '' : 'secondary';
+    yesBtn.textContent = 'Yes';
+    yesBtn.onclick = () => { pendingSplit.includeMullion = true; pendingSplit.widths = null; render(); };
+    const noBtn = document.createElement('button');
+    noBtn.className = includeMullion ? 'secondary' : '';
+    noBtn.textContent = 'No';
+    noBtn.onclick = () => { pendingSplit.includeMullion = false; pendingSplit.widths = null; render(); };
+    toggleRow.appendChild(toggleLabel);
+    toggleRow.appendChild(yesBtn);
+    toggleRow.appendChild(noBtn);
+    bar.appendChild(toggleRow);
+  }
+
   const sectionCount = getPresetSectionCount(pattern, family);
 
   // Batch 12: pre-fill from CURRENT live state the first time this form renders in edit mode
@@ -1816,6 +1858,16 @@ function renderAssemblyPresetForm(bar, rect) {
     // prefilled widths for a sliding-overlap id.
     if (isSlidingOverlapId(id, pattern)) {
       pendingSplit.widths = computeSlidingWinPrefillWidths(pattern, rect.w, hasFrame);
+      if (match) pendingSplit.matchedCatalogSize = match;
+    } else if (family === 'casement' || family === 'awning') {
+      // Batch 22: same "solve against real available space" principle as the batch-20 sliding
+      // fix — the old equal-split-of-catalog-total prefill ignored the region's real width
+      // entirely. match/matchedCatalogSize is still computed and stored below for its own info
+      // line (deliberately left wired, per this batch's own instruction not to remove or
+      // repurpose catalog data) but no longer drives the prefilled widths for these two families.
+      const mullionForPrefill = includeMullion ? getMullionPrefillMM() : 0;
+      const mullionCount = includeMullion ? sectionCount - 1 : 0;
+      pendingSplit.widths = computeAssemblyPrefillWidths(sectionCount, rect.w, mullionForPrefill, mullionCount);
       if (match) pendingSplit.matchedCatalogSize = match;
     } else if (match) {
       pendingSplit.widths = new Array(sectionCount).fill(match.widthMM / sectionCount);
@@ -1886,9 +1938,11 @@ function renderAssemblyPresetForm(bar, rect) {
   // Batch 17/18: a sliding (door or window) id has no mullion at its overlap/flush joins at
   // all — sections meet either via a 60mm overlap or flush, never via a separate mullion
   // member — so the mullion input is omitted entirely rather than shown-but-ignored, which
-  // would be misleading.
+  // would be misleading. Batch 22: a casement preset with includeMullion:false is the same
+  // situation — a true butt-joint has nothing to specify, so the field is hidden entirely
+  // rather than shown-but-ignored/forced-to-zero.
   const isSlidingOverlap = isSlidingOverlapId(id, pattern);
-  if (!isSlidingOverlap) {
+  if (!isSlidingOverlap && includeMullion) {
     const mullionLabel = document.createElement('span');
     mullionLabel.textContent = 'Mullion thickness (mm)';
     const mullionInput = document.createElement('input');
@@ -2142,9 +2196,13 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
   }
   // Batch 17: a -win id has no mullion input at all (see renderAssemblyPresetForm) — its
   // sections' real combined width is sum(widths) minus 60mm per overlap join, never
-  // sum(widths)+mullions.
-  const mullionThickness = isSlidingOverlapId(id, pattern) ? 0 : Number(document.getElementById('presetMullionInput').value);
-  if (!isSlidingOverlapId(id, pattern) && !(mullionThickness > 0)) {
+  // sum(widths)+mullions. Batch 22: a casement preset with includeMullion:false is the same
+  // situation — a true butt-joint has no mullion input rendered at all (no DOM element to read),
+  // so this must not unconditionally read presetMullionInput any more than the sliding-overlap
+  // case does.
+  const noMullionAtAll = isSlidingOverlapId(id, pattern) || (family === 'casement' && !pendingSplit.includeMullion);
+  const mullionThickness = noMullionAtAll ? 0 : Number(document.getElementById('presetMullionInput').value);
+  if (!noMullionAtAll && !(mullionThickness > 0)) {
     errDiv.textContent = 'Enter a mullion thickness greater than 0.';
     return;
   }
@@ -2153,7 +2211,10 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
     : sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
   const available = rect.w;
   // Same convention as confirmSplit's own error message: state the entered total against the
-  // available width, don't auto-resize the region — its own size is the fixed reference.
+  // available width, don't auto-resize the region — its own size is the fixed reference. Note:
+  // for a no-mullion casement, (sectionCount-1)*mullionThickness above is just (sectionCount-1)*0
+  // — the enteredTotal formula itself needs no separate branch, unlike the sliding-overlap case,
+  // since a plain sum-of-widths with a zero mullion multiplier is already exactly the right total.
   if (Math.abs(enteredTotal - available) > 0.01) {
     errDiv.textContent = (isSlidingOverlapId(id, pattern) ? 'Section widths (accounting for overlaps) total ' : 'Section widths plus mullions total ') + Math.round(enteredTotal) +
       'mm, but this region is ' + Math.round(available) + 'mm wide. Adjust the widths' +
@@ -2783,6 +2844,21 @@ const SLIDING_OVERLAP_MM = 60;
 // is no longer sliding-specific even though its value and physical reasoning (20mm per edge that
 // touches the outer frame) originated there.
 const FRAME_TUCKIN_MM = 40;
+
+// Batch 22 — casement/awning sash width prefill, solved against the real selected region width
+// (rect.w), same principle as the sliding prefill fix (batch 20): a catalog total is a different
+// number from the region actually being divided, so equally splitting a catalog total (the old
+// behaviour) frequently didn't match the real available space, which the existing exact-match
+// validation then correctly blocked on. mullionCount is 0 for casement with includeMullion:false
+// (a true butt-joint, no member between sashes at all — confirmed, §7.1) or sectionCount-1
+// otherwise (awning always, casement with includeMullion:true). Catalog data
+// (findClosestCatalogSize/ASSEMBLY_PRESET_CATALOG_SIZES) is deliberately left untouched and
+// unused by this — whether it plays any future role here (even just an informational line) is
+// undecided, not guessed at in this batch.
+function computeAssemblyPrefillWidths(sectionCount, availableWidthMM, mullionWidthMM, mullionCount) {
+  const sashWidth = (availableWidthMM - mullionCount * mullionWidthMM) / sectionCount;
+  return new Array(sectionCount).fill(sashWidth);
+}
 
 // Batch 18: renamed from isSlidingWinId (batch 17) — now matches ANY sliding assembly-preset id,
 // window (-win suffixed) or door (no suffix), since both now share the identical overlap/tuck-in
