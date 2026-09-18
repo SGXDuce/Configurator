@@ -303,6 +303,12 @@ function addElevation() {
 // this one small button is treated as the minimum necessary entry point, not "clutter" in the
 // sense the prompt meant (a whole tab strip/switcher UI for a case that doesn't exist yet).
 // Flagging this as a judgment call, not something the prompt itself resolved.
+//
+// TEMPORARY, batch 25 only: this button is a placeholder entry point, not the real one. The
+// actual trigger for creating a linked second elevation is the flat-vs-angled choice (§7.4),
+// which batch 26 is responsible for building. When batch 26 lands, it should REPLACE this
+// button and its addElevation() wiring with that real trigger — not leave both to coexist as
+// two separate ways to add an elevation.
 function renderElevationTabs() {
   const wrap = document.getElementById('elevationTabs');
   wrap.innerHTML = '';
@@ -316,6 +322,8 @@ function renderElevationTabs() {
       wrap.appendChild(tab);
     });
   }
+  // TEMPORARY placeholder button (batch 25) — see the comment above this function. Remove this
+  // button and its addElevation() call once batch 26's real flat-vs-angled trigger (§7.4) exists.
   const addBtn = document.createElement('button');
   addBtn.className = 'secondary';
   addBtn.textContent = '+ Add elevation';
