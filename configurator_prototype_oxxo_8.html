@@ -190,6 +190,9 @@ function getSashEdges(node) {
 // match the existing sashTopMM/sashBottomMM/sashLeftMM/sashRightMM per-edge convention exactly
 // (sashTopLocked/sashBottomLocked/sashLeftLocked/sashRightLocked), rather than a differently-
 // shaped parallel structure (e.g. a lockedEdges array/set).
+function hasLockedEdge(node) {
+  return !!(node.kind === 'filled' && (node.sashTopLocked || node.sashBottomLocked || node.sashLeftLocked || node.sashRightLocked));
+}
 function withUniformSashMM(node, mm) {
   const next = { ...node };
   if (!node.sashTopLocked) next.sashTopMM = mm;
@@ -1454,9 +1457,20 @@ function renderToolbar() {
   // Batch 23: a real, separate toolbar button — not a checkbox on an existing one, per the
   // addendum's own confirmed UI decision. Same selection-then-split interaction pattern as
   // mullion/transom/sash above.
+  // Batch 24: a deliberate new restriction (not a bug reversal — batch 23 correctly supported
+  // "any pane type on either side" per its own instruction at the time) — an unframed joint is
+  // only valid between fixed-glass window panes. Gated the same way presetBtn is already gated
+  // on hingedDoorAncestor: disabled + title, not hidden, so the reason is visible rather than
+  // the button just disappearing.
   const unframedBtn = document.createElement('button');
   unframedBtn.textContent = 'Add unframed joint (silicone)';
-  unframedBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'unframed' }; render(); };
+  const unframedAllowed = node.kind === 'empty' || (node.kind === 'filled' && node.type === 'fixed' && node.productClass === 'window');
+  if (!unframedAllowed) {
+    unframedBtn.disabled = true;
+    unframedBtn.title = 'Unframed joints are only available for fixed glass windows — change this pane\'s type first.';
+  } else {
+    unframedBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'unframed' }; render(); };
+  }
   const presetBtn = document.createElement('button');
   presetBtn.textContent = 'Apply assembly preset';
   // Batch 10: presets always include horizontal-slider sections, already disallowed as a
@@ -1510,6 +1524,20 @@ function renderToolbar() {
       b.disabled = true;
       b.title = 'Not allowed as a child of a hinged door panel.';
     }
+    // Batch 24: a pane with any locked edge (an unframed silicone joint's touching edge, batch
+    // 23) may only ever be reassigned to exactly type:'fixed', productClass:'window' — every
+    // other button, including the Door group's own "Fixed" button (still productClass:'door',
+    // still disallowed — this check is on the RESULTING type+productClass pair, not just the
+    // type string, so it correctly excludes that one too, not only the obviously-operable
+    // buttons). Written as its own separate `if` (not `else if` after the hingedDoorAncestor
+    // check above) specifically so the two checks can't clobber each other — if a button somehow
+    // matched both restrictions at once, `b.disabled` would already be true from the first check
+    // and this one only ever adds `true` again (or leaves it `true`), never clears it back to
+    // false; the more restrictive result always wins regardless of which check runs second.
+    if (hasLockedEdge(node) && !(type === 'fixed' && productClass === 'window')) {
+      b.disabled = true;
+      b.title = 'This edge is part of an unframed silicone joint — only fixed glass is allowed here.';
+    }
     b.onclick = () => {
       // Item 4 (batch 8): opening type (door/window/side-panel) is independent of glazing
       // method — a door containing an operable window is still a door. Any pane assigned while
@@ -1528,6 +1556,16 @@ function renderToolbar() {
         sashLeftMM: prevSash ? prevSash.left : DEFAULT_SASH_MM,
         sashRightMM: prevSash ? prevSash.right : DEFAULT_SASH_MM
       };
+      // Batch 24: carry over any sash*Locked flags — the only way this onclick is ever reached
+      // while `node` has a locked edge is via the one allowed button (type:'fixed',
+      // productClass:'window'; every other button is disabled by the hasLockedEdge check
+      // above), so this is effectively a no-op re-confirmation of the pane's own current type —
+      // the joint's lock must survive it, not be silently dropped the way a fresh `newNode`
+      // literal would otherwise drop it.
+      if (node.sashTopLocked) newNode.sashTopLocked = true;
+      if (node.sashBottomLocked) newNode.sashBottomLocked = true;
+      if (node.sashLeftLocked) newNode.sashLeftLocked = true;
+      if (node.sashRightLocked) newNode.sashRightLocked = true;
       // Every call site passes an explicit hingeEdge for type:'hinged' ('left' for the door
       // and window "Hinged" buttons, 'top' for "Awning"); hingedDoorAncestor still wins when
       // set, since a hinged child of a hinged door panel is only ever the awning case.
@@ -2583,8 +2621,30 @@ function confirmUnframedJoint(rect) {
     return;
   }
   const node = getNode(pendingSplit.path);
-  const childA = cloneForSplit(node);
-  const childB = cloneForSplit(node);
+  // Batch 24: an unframed joint is only ever valid between fixed-glass window panes — this is
+  // enforced defensively here too, not only by the unframedBtn gate, so the invariant holds even
+  // if this function is ever reached some other way. cloneForSplit(emptyNode()) would return
+  // {kind:'empty'}, not a fixed/window filled node, so an empty source region needs a real
+  // fresh fixed/window leaf built directly rather than "cloned then forced" — cloneForSplit is
+  // still used when the source is already filled, to preserve its own sash values as the
+  // starting point (same precedent as every other split type), just with type/productClass then
+  // forced afterward regardless of what the source pane actually was.
+  function freshFixedWindowLeaf() {
+    return {
+      kind: 'filled', type: 'fixed', productClass: 'window',
+      sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM,
+      sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM
+    };
+  }
+  const childA = node.kind === 'filled' ? cloneForSplit(node) : freshFixedWindowLeaf();
+  const childB = node.kind === 'filled' ? cloneForSplit(node) : freshFixedWindowLeaf();
+  childA.type = 'fixed'; childA.productClass = 'window';
+  childB.type = 'fixed'; childB.productClass = 'window';
+  // Fixed panes never carry type-specific fields (hingeEdge/slideDirection/bladeWidthMM/
+  // bladeLengthMM) — clear any that survived from cloning a non-fixed source pane, since forcing
+  // type alone (above) doesn't remove fields that only made sense for the old type.
+  delete childA.hingeEdge; delete childA.slideDirection; delete childA.bladeWidthMM; delete childA.bladeLengthMM;
+  delete childB.hingeEdge; delete childB.slideDirection; delete childB.bladeWidthMM; delete childB.bladeLengthMM;
   // Zero + lock only the specific touching edge on each side — every other edge (including a
   // fixed-framed/hinged/slider pane's normal sash on its remaining three sides) is left exactly
   // as cloneForSplit already set it.
