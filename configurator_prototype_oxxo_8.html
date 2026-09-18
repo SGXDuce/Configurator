@@ -15,6 +15,11 @@
   .subtitle { color: var(--text-dim); font-size: 13px; margin: 0 0 24px; }
   h2 { font-size: 15px; font-weight: 600; margin: 28px 0 10px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
   .controls { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+  .elevation-tabs { display: flex; gap: 6px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .elevation-tab { padding: 7px 14px; border-radius: 4px 4px 0 0; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--panel2); color: var(--text-dim); border: 1px solid var(--border); border-bottom: none; }
+  .elevation-tab.active { background: var(--panel); color: var(--text); border-color: var(--frame); }
+  .elevation-tab-remove { margin-left: 8px; color: var(--text-dim); font-weight: 400; }
+  .elevation-tab-remove:hover { color: var(--danger); }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field label { font-size: 11px; color: var(--text-dim); }
   .field input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 4px; width: 100px; font-size: 13px; }
@@ -80,6 +85,10 @@
 <p class="subtitle">Blank canvas, no frame by default. Divide any region with a mullion, transom, or a sash (with its own overlap onto its neighbour), and add an outer frame only if the job has one. Nothing here is wired to the AS 1288 engine or Flask app yet.</p>
 
 <!-- Legend temporarily removed (batch 3, item 3) — pending a rebuild once the type system stabilises. -->
+
+<!-- Batch 25: elevation tab bar — left empty/hidden by renderElevationTabs() whenever there's
+     only one elevation, so a single-elevation file looks exactly as it did before this batch. -->
+<div id="elevationTabs" class="elevation-tabs" style="display:none;"></div>
 
 <h2>Opening</h2>
 <div class="controls">
@@ -204,24 +213,115 @@ function withUniformSashMM(node, mm) {
 
 function emptyNode() { return { kind: 'empty' }; }
 
-let root = emptyNode();
-let selected = null; // { path, isBar, isOverlap }
-let pendingSplit = null; // { path, mode: 'mullion'|'transom'|'sash' }
-let lastLeafRects = {};
-let lastLeaves = [];
-let lastBars = [];
-// Batch 12: rect for EVERY node visited by the last render's walk() (not just leaves), keyed
-// by pathKey — lets a section's true current width be found even if that section has since
-// been subdivided further (a plain leaf lookup by that exact path would miss it).
-let lastNodeRects = {};
-let lastGeom = null; // the frameGeom() result from the most recent render(), incl. extra gutters
-let customOrigin = null;
-let placingOrigin = false;
-let hasFrame = false;
-let frameMembers = { head: 60, sill: 60, jambL: 60, jambR: 60 };
-// Remember the last valid overall dims so a rejected edit can be rolled back cleanly.
-let lastValidOverallW = 1800;
-let lastValidOverallH = 2100;
+// Batch 25 — two-elevation support. Every piece of state that used to be a single bare global
+// (root, selected, pendingSplit, the four lastXxx render caches, customOrigin, placingOrigin,
+// hasFrame, frameMembers, lastValidOverallW/H) is now a field on an "elevation" object; overallW/
+// overallH themselves are NOT stored here — they live in the frameW/frameH DOM inputs, same as
+// before this batch, and are saved into / restored from the elevation object only at the moment
+// the active elevation is switched (see setActiveElevationIndex below). This batch does not add
+// the joint/angle/shared-height mechanism (that's the next batch) — this is purely a state-model
+// change with zero intended behaviour difference for a single elevation.
+function newElevation(name) {
+  return {
+    name: name || 'Elevation 1',
+    // overallW/overallH mirror the frameW/frameH DOM inputs' own default values (see the HTML
+    // <input value="1800">/<input value="2100">) — this elevation object's own copy is only ever
+    // READ/WRITTEN at the moment of an elevation switch (setActiveElevationIndex below); while an
+    // elevation is active, the DOM inputs themselves remain the single live source of truth,
+    // exactly as before this batch (getOverallW/getOverallH are unchanged).
+    overallW: 1800,
+    overallH: 2100,
+    root: emptyNode(),
+    selected: null, // { path, isBar, isOverlap }
+    pendingSplit: null, // { path, mode: 'mullion'|'transom'|'sash'|'unframed'|... }
+    lastLeafRects: {},
+    lastLeaves: [],
+    lastBars: [],
+    // Batch 12: rect for EVERY node visited by the last render's walk() (not just leaves), keyed
+    // by pathKey — lets a section's true current width be found even if that section has since
+    // been subdivided further (a plain leaf lookup by that exact path would miss it).
+    lastNodeRects: {},
+    lastGeom: null, // the frameGeom() result from the most recent render(), incl. extra gutters
+    customOrigin: null,
+    placingOrigin: false,
+    hasFrame: false,
+    frameMembers: { head: 60, sill: 60, jambL: 60, jambR: 60 },
+    // Remember the last valid overall dims so a rejected edit can be rolled back cleanly.
+    lastValidOverallW: 1800,
+    lastValidOverallH: 2100
+  };
+}
+
+let elevations = [newElevation('Elevation 1')];
+let activeElevationIndex = 0;
+function activeElevation() { return elevations[activeElevationIndex]; }
+
+// Batch 25 — switching elevations. overallW/overallH live in the frameW/frameH DOM inputs while
+// an elevation is active (unchanged from before this batch — getOverallW/getOverallH still just
+// read those inputs directly), so switching has to explicitly save the OUTGOING elevation's
+// current DOM values into its own object, then load the INCOMING elevation's own stored
+// overallW/overallH (and hasFrame/frameMembers-derived member inputs) back into the DOM, before
+// calling render() so everything downstream (which all now reads via activeElevation()) picks up
+// the newly-active elevation's own state. Assumption made here, not spelled out in the batch
+// prompt: switching does NOT preserve `selected`/`pendingSplit` across a round-trip in any special
+// way — they're just ordinary fields on each elevation object like everything else, so leaving
+// elevation A mid-way through an in-progress split and switching to B, then back to A, naturally
+// resumes exactly where A was left, since setNode/getNode etc. never touched anything but A's own
+// object the whole time. Flagging this as the one place this batch made a judgment call the
+// prompt didn't spell out explicitly.
+function setActiveElevationIndex(index) {
+  if (index === activeElevationIndex) return;
+  const outgoing = activeElevation();
+  outgoing.overallW = getOverallW();
+  outgoing.overallH = getOverallH();
+  activeElevationIndex = index;
+  const incoming = activeElevation();
+  document.getElementById('frameW').value = incoming.overallW;
+  document.getElementById('frameH').value = incoming.overallH;
+  document.getElementById('headInput').value = incoming.frameMembers.head;
+  document.getElementById('sillInput').value = incoming.frameMembers.sill;
+  document.getElementById('jambLInput').value = incoming.frameMembers.jambL;
+  document.getElementById('jambRInput').value = incoming.frameMembers.jambR;
+  incoming.lastValidOverallW = incoming.overallW;
+  incoming.lastValidOverallH = incoming.overallH;
+  render();
+}
+
+function addElevation() {
+  const outgoing = activeElevation();
+  outgoing.overallW = getOverallW();
+  outgoing.overallH = getOverallH();
+  elevations.push(newElevation('Elevation ' + (elevations.length + 1)));
+  setActiveElevationIndex(elevations.length - 1);
+}
+
+// Batch 25: the per-tab switcher strip is entirely absent (display:none, no tab elements built,
+// not merely visually hidden) whenever there's only one elevation — per this batch's own "no new
+// UI clutter for the single-elevation case" requirement. Assumption made here, not spelled out
+// explicitly in the batch prompt: a small "+ Add elevation" affordance is still shown even with
+// only one elevation, since otherwise there would be no way to ever reach a second one at all —
+// this one small button is treated as the minimum necessary entry point, not "clutter" in the
+// sense the prompt meant (a whole tab strip/switcher UI for a case that doesn't exist yet).
+// Flagging this as a judgment call, not something the prompt itself resolved.
+function renderElevationTabs() {
+  const wrap = document.getElementById('elevationTabs');
+  wrap.innerHTML = '';
+  wrap.style.display = 'flex';
+  if (elevations.length >= 2) {
+    elevations.forEach((elOb, i) => {
+      const tab = document.createElement('div');
+      tab.className = 'elevation-tab' + (i === activeElevationIndex ? ' active' : '');
+      tab.textContent = elOb.name;
+      tab.addEventListener('click', () => setActiveElevationIndex(i));
+      wrap.appendChild(tab);
+    });
+  }
+  const addBtn = document.createElement('button');
+  addBtn.className = 'secondary';
+  addBtn.textContent = '+ Add elevation';
+  addBtn.onclick = addElevation;
+  wrap.appendChild(addBtn);
+}
 
 // ---- Pane type vocabulary --------------------------------------------------
 // productClass: 'door' | 'window' | 'side-panel' — manual label only, never inferred.
@@ -279,13 +379,13 @@ const WINDOW_SASH_TYPES = ['fixed', 'fixed-framed', 'hinged', 'horizontal-slider
 
 function pathKey(path) { return path.join('.'); }
 function getNode(path) {
-  let node = root;
+  let node = activeElevation().root;
   for (const i of path) node = node.children[i];
   return node;
 }
 function setNode(path, newNode) {
-  if (path.length === 0) { root = newNode; return; }
-  let node = root;
+  if (path.length === 0) { activeElevation().root = newNode; return; }
+  let node = activeElevation().root;
   for (let i = 0; i < path.length - 1; i++) node = node.children[path[i]];
   node.children[path[path.length - 1]] = newNode;
 }
@@ -331,7 +431,7 @@ function pathsEqual(a, b) { return a.length === b.length && a.every((v, i) => v 
 //      already inside one) gets divided — walk up looking for the nearest such marker.
 // Returns { path, hingedDoorRef } for the nearest marked ancestor, or null.
 function findHingedDoorAncestor(path) {
-  let node = root;
+  let node = activeElevation().root;
   for (let i = 0; i < path.length; i++) {
     if ((node.kind === 'split' || node.kind === 'sashSplit') && node.hingedDoorRef) {
       return { path: path.slice(0, i), hingedDoorRef: node.hingedDoorRef };
@@ -348,7 +448,7 @@ function findHingedDoorAncestor(path) {
 // being built inside one section of another preset (not currently done, but not blocked
 // either) — a nested preset must resolve to its own marker, not its ancestor preset's.
 function findAssemblyPresetAncestor(path) {
-  let node = root;
+  let node = activeElevation().root;
   let found = null;
   for (let i = 0; i < path.length; i++) {
     // Batch 17: a -win preset's top-level node can be a sashSplit, not just a plain split (see
@@ -391,7 +491,7 @@ function getAssemblyPresetCurrentState(markedPath, sectionCount, pattern, id) {
       if (i < sectionCount - 1) relPath.push(0);
     }
     const fullPath = markedPath.concat(relPath);
-    const rect = lastNodeRects[pathKey(fullPath)];
+    const rect = activeElevation().lastNodeRects[pathKey(fullPath)];
     widths.push(rect ? rect.w : null);
   }
   const markedNode = getNode(markedPath);
@@ -411,7 +511,7 @@ function isAllowedInHingedDoor(type, hingeEdge) {
 
 function getOverallW() { return Number(document.getElementById('frameW').value) || 0; }
 function getOverallH() { return Number(document.getElementById('frameH').value) || 0; }
-function getMembers() { return hasFrame ? frameMembers : { head: 0, sill: 0, jambL: 0, jambR: 0 }; }
+function getMembers() { const ev = activeElevation(); return ev.hasFrame ? ev.frameMembers : { head: 0, sill: 0, jambL: 0, jambR: 0 }; }
 function getOpeningW(overallW, m) { return overallW - m.jambL - m.jambR; }
 function getOpeningH(overallH, m) { return overallH - m.head - m.sill; }
 
@@ -426,7 +526,7 @@ function getOpeningH(overallH, m) { return overallH - m.head - m.sill; }
 // since there's no jamb value to derive from in that case.
 function getMullionPrefillMM() {
   const m = getMembers();
-  return hasFrame ? m.jambL : 45;
+  return activeElevation().hasFrame ? m.jambL : 45;
 }
 
 // Item 10: main origin is the outer frame's true outside corner when a frame exists, or the
@@ -436,7 +536,7 @@ function getMullionPrefillMM() {
 // rather than the raw input. No change to the formula itself was needed (confirmed during
 // implementation), only to what feeds it.
 function mainOrigin(openingH, m) { return { x: -m.jambL, y: openingH + m.sill }; }
-function activeOrigin(openingH, m) { return customOrigin || mainOrigin(openingH, m); }
+function activeOrigin(openingH, m) { return activeElevation().customOrigin || mainOrigin(openingH, m); }
 
 // nodeRectsOut (batch 6, item 2): records {x,y,w,h} for EVERY node visited, keyed by pathKey —
 // not just leaves. Needed so a hinged door panel's own rectangle can still be looked up after
@@ -585,28 +685,31 @@ function buildSnapCandidates(openingW, openingH, m, leaves, bars) {
 }
 
 function updateOriginStatus(openingH, m) {
+  const ev = activeElevation();
   const el = document.getElementById('originStatus');
   const btn = document.getElementById('placeOriginBtn');
-  if (customOrigin) {
-    el.textContent = 'Custom origin at (' + Math.round(customOrigin.x) + ', ' + Math.round(openingH - customOrigin.y) + ') mm right/above the main origin.';
+  if (ev.customOrigin) {
+    el.textContent = 'Custom origin at (' + Math.round(ev.customOrigin.x) + ', ' + Math.round(openingH - ev.customOrigin.y) + ') mm right/above the main origin.';
   } else {
-    el.textContent = hasFrame ? 'Using the main origin — outside bottom-left corner of the outer frame.' : 'Using the main origin — bottom-left corner of the opening (no frame added).';
+    el.textContent = ev.hasFrame ? 'Using the main origin — outside bottom-left corner of the outer frame.' : 'Using the main origin — bottom-left corner of the opening (no frame added).';
   }
-  btn.textContent = placingOrigin ? 'Click a point on the drawing…' : 'Click to place on drawing';
+  btn.textContent = ev.placingOrigin ? 'Click a point on the drawing…' : 'Click to place on drawing';
 }
 
 function updateFrameControls() {
+  const ev = activeElevation();
   const statusEl = document.getElementById('frameMemberStatus');
   const toggleBtn = document.getElementById('toggleFrameBtn');
   const fields = document.getElementById('frameMemberFields');
-  statusEl.textContent = hasFrame
-    ? ('Outer frame added — head ' + frameMembers.head + 'mm, sill ' + frameMembers.sill + 'mm, jambs ' + frameMembers.jambL + '/' + frameMembers.jambR + 'mm.')
+  statusEl.textContent = ev.hasFrame
+    ? ('Outer frame added — head ' + ev.frameMembers.head + 'mm, sill ' + ev.frameMembers.sill + 'mm, jambs ' + ev.frameMembers.jambL + '/' + ev.frameMembers.jambR + 'mm.')
     : 'No outer frame — panes butt directly into the opening.';
-  toggleBtn.textContent = hasFrame ? 'Remove outer frame' : 'Add outer frame';
-  fields.style.display = hasFrame ? 'flex' : 'none';
+  toggleBtn.textContent = ev.hasFrame ? 'Remove outer frame' : 'Add outer frame';
+  fields.style.display = ev.hasFrame ? 'flex' : 'none';
 }
 
 function render() {
+  const ev = activeElevation();
   const overallW = getOverallW();
   const overallH = getOverallH();
   const m = getMembers();
@@ -624,7 +727,7 @@ function render() {
   // stacked rows are needed, then build the real geometry with enough gutter to fit them.
   const gProbe = frameGeom(overallWpx, overallHpx, m, 0, 0);
   const probeBars = [];
-  walk(root, 0, 0, openingW, openingH, [], [], [], probeBars, []);
+  walk(ev.root, 0, 0, openingW, openingH, [], [], [], probeBars, []);
   const probeVRows = assignChainRows(probeBars.filter(b => b.axis === 'v').map(b => ({ b, px: toPx(gProbe, b.x + b.posMM, 0).x })).sort((a, c) => a.px - c.px));
   const probeHRows = assignChainRows(probeBars.filter(b => b.axis === 'h').map(b => ({ b, px: toPx(gProbe, 0, b.y + b.posMM).y })).sort((a, c) => a.px - c.px));
   const maxVRow = probeVRows.length ? Math.max(...probeVRows.map(r => r.row)) : 0;
@@ -633,11 +736,11 @@ function render() {
   const extraRight = maxHRow * DIM_ROW_STEP;
 
   const g = frameGeom(overallWpx, overallHpx, m, extraTop, extraRight);
-  lastGeom = g;
+  ev.lastGeom = g;
   diagram.style.width = (g.right + RIGHT_GUTTER + extraRight) + 'px';
   diagram.style.height = (g.bottom + BOTTOM_GUTTER) + 'px';
 
-  if (hasFrame) {
+  if (ev.hasFrame) {
     const strips = [
       { left: g.contentLeft, top: g.top, width: g.contentRight - g.contentLeft, height: g.headPx },
       { left: g.contentLeft, top: g.contentBottom, width: g.contentRight - g.contentLeft, height: g.sillPx },
@@ -664,9 +767,9 @@ function render() {
   const bars = [];
   const overlaps = [];
   const nodeRects = {};
-  walk(root, 0, 0, openingW, openingH, [], [], leaves, bars, overlaps, nodeRects);
-  lastNodeRects = nodeRects;
-  lastLeaves = leaves; lastBars = bars;
+  walk(ev.root, 0, 0, openingW, openingH, [], [], leaves, bars, overlaps, nodeRects);
+  ev.lastNodeRects = nodeRects;
+  ev.lastLeaves = leaves; ev.lastBars = bars;
 
   // Item 2 (batch 6): a hinged door panel's own hinge symbol must span the whole door leaf,
   // not shrink to whichever individual child region still happens to carry type:'hinged' once
@@ -675,9 +778,9 @@ function render() {
   // leaves under the same split door panel don't each draw a duplicate.
   const drawnHingeDoorAncestors = new Set();
 
-  lastLeafRects = {};
+  ev.lastLeafRects = {};
   leaves.forEach(l => {
-    lastLeafRects[pathKey(l.path)] = { x: l.x, y: l.y, w: l.w, h: l.h };
+    ev.lastLeafRects[pathKey(l.path)] = { x: l.x, y: l.y, w: l.w, h: l.h };
     const pane = document.createElement('div');
     const isFixed = l.node.kind === 'filled' && l.node.type === 'fixed';
     pane.className = 'pane ' + (l.node.kind === 'filled' ? 'filled' : 'empty') + (isFixed ? ' no-frame-band' : '');
@@ -762,7 +865,7 @@ function render() {
         }
       }
       // Item 7: pane dimension label shows only when this pane is the currently selected one.
-      const isSelectedPane = selected && !selected.isBar && pathsEqual(selected.path, l.path);
+      const isSelectedPane = ev.selected && !ev.selected.isBar && pathsEqual(ev.selected.path, l.path);
       if (isSelectedPane && paneWpx > 46 && paneHpx > 24) {
         const dimLabel = document.createElement('div');
         dimLabel.className = 'pane-dim-label';
@@ -783,12 +886,12 @@ function render() {
         }
       }
     }
-    if (selected && !selected.isBar && pathsEqual(selected.path, l.path)) pane.classList.add('selected');
+    if (ev.selected && !ev.selected.isBar && pathsEqual(ev.selected.path, l.path)) pane.classList.add('selected');
     pane.addEventListener('click', (e) => {
-      if (placingOrigin) return;
+      if (ev.placingOrigin) return;
       e.stopPropagation();
-      pendingSplit = null;
-      selected = { path: l.path, isBar: false };
+      ev.pendingSplit = null;
+      ev.selected = { path: l.path, isBar: false };
       render();
     });
     outer.appendChild(pane);
@@ -802,7 +905,7 @@ function render() {
       // transparent) arrow whenever a slider pane was selected. When both are showing at once,
       // bump the arrow up in size/contrast and shift it toward the top of the pane so neither
       // is fully hidden by the other — unselected panes (no letter shown) keep the plain style.
-      const hasVisibleLetter = selected && !selected.isBar && pathsEqual(selected.path, l.path) &&
+      const hasVisibleLetter = ev.selected && !ev.selected.isBar && pathsEqual(ev.selected.path, l.path) &&
         (l.node.productClass === 'door' || l.node.productClass === 'window' || l.node.productClass === 'side-panel');
       // Bug fix: .slide-arrow only ever had its left/width set per-pane, and relied on a fixed
       // `top: 50%` in CSS to vertically center — but that 50% was relative to the whole `outer`
@@ -874,12 +977,12 @@ function render() {
       bardiv.style.width = (b.w * SCALE) + 'px';
       bardiv.style.height = (b.thicknessMM * SCALE) + 'px';
     }
-    if (selected && selected.isBar && !selected.isOverlap && pathsEqual(selected.path, b.path)) bardiv.classList.add('selected');
+    if (ev.selected && ev.selected.isBar && !ev.selected.isOverlap && pathsEqual(ev.selected.path, b.path)) bardiv.classList.add('selected');
     bardiv.addEventListener('click', (e) => {
-      if (placingOrigin) return;
+      if (ev.placingOrigin) return;
       e.stopPropagation();
-      pendingSplit = null;
-      selected = { path: b.path, isBar: true, isOverlap: false };
+      ev.pendingSplit = null;
+      ev.selected = { path: b.path, isBar: true, isOverlap: false };
       render();
     });
     outer.appendChild(bardiv);
@@ -904,12 +1007,12 @@ function render() {
       div.style.height = '10px';
       div.style.marginTop = '-5px';
     }
-    if (selected && selected.isOverlap && pathsEqual(selected.path, o.path)) div.classList.add('selected');
+    if (ev.selected && ev.selected.isOverlap && pathsEqual(ev.selected.path, o.path)) div.classList.add('selected');
     div.addEventListener('click', (e) => {
-      if (placingOrigin) return;
+      if (ev.placingOrigin) return;
       e.stopPropagation();
-      pendingSplit = null;
-      selected = { path: o.path, isBar: true, isOverlap: true };
+      ev.pendingSplit = null;
+      ev.selected = { path: o.path, isBar: true, isOverlap: true };
       render();
     });
     outer.appendChild(div);
@@ -922,6 +1025,7 @@ function render() {
 
   updateOriginStatus(openingH, m);
   updateFrameControls();
+  renderElevationTabs();
   renderToolbar();
   renderTable(leaves);
 }
@@ -1112,6 +1216,7 @@ function makeEditableLabel(diagram, xpx, ypx, value, validateAndCommit, rotateDe
 }
 
 function buildDimensionLabels(diagram, openingW, openingH, m, g, bars) {
+  const ev = activeElevation();
   const overallW = getOverallW();
   const overallH = getOverallH();
   const vBars = bars.filter(b => b.axis === 'v').map(b => ({ b, px: toPx(g, b.x + b.posMM, 0).x })).sort((a, c) => a.px - c.px);
@@ -1126,10 +1231,10 @@ function buildDimensionLabels(diagram, openingW, openingH, m, g, bars) {
     if (!(newVal >= 200)) return 'Minimum 200mm.';
     const newM = getMembers();
     const newOpeningW = getOpeningW(newVal, newM);
-    const err = validateTreeAgainstSize(root, newOpeningW, openingH);
+    const err = validateTreeAgainstSize(ev.root, newOpeningW, openingH);
     if (err) return err;
     document.getElementById('frameW').value = newVal;
-    lastValidOverallW = newVal;
+    ev.lastValidOverallW = newVal;
     render();
     return null;
   });
@@ -1137,53 +1242,53 @@ function buildDimensionLabels(diagram, openingW, openingH, m, g, bars) {
     if (!(newVal >= 200)) return 'Minimum 200mm.';
     const newM = getMembers();
     const newOpeningH = getOpeningH(newVal, newM);
-    const err = validateTreeAgainstSize(root, openingW, newOpeningH);
+    const err = validateTreeAgainstSize(ev.root, openingW, newOpeningH);
     if (err) return err;
     document.getElementById('frameH').value = newVal;
-    lastValidOverallH = newVal;
+    ev.lastValidOverallH = newVal;
     render();
     return null;
   }, -90);
 
-  if (hasFrame) {
+  if (ev.hasFrame) {
     if (g.headPx > 13) {
-      makeEditableLabel(diagram, (g.contentLeft + g.contentRight) / 2, g.top + g.headPx / 2, frameMembers.head, (v) => {
+      makeEditableLabel(diagram, (g.contentLeft + g.contentRight) / 2, g.top + g.headPx / 2, ev.frameMembers.head, (v) => {
         if (!(v > 0)) return 'Must be greater than 0.';
-        const newM = { ...frameMembers, head: v };
+        const newM = { ...ev.frameMembers, head: v };
         const newOpeningH = getOpeningH(overallH, newM);
-        const err = validateTreeAgainstSize(root, openingW, newOpeningH);
+        const err = validateTreeAgainstSize(ev.root, openingW, newOpeningH);
         if (err) return err;
-        frameMembers.head = v; document.getElementById('headInput').value = v; render(); return null;
+        ev.frameMembers.head = v; document.getElementById('headInput').value = v; render(); return null;
       });
     }
     if (g.sillPx > 13) {
-      makeEditableLabel(diagram, (g.contentLeft + g.contentRight) / 2, g.contentBottom + g.sillPx / 2, frameMembers.sill, (v) => {
+      makeEditableLabel(diagram, (g.contentLeft + g.contentRight) / 2, g.contentBottom + g.sillPx / 2, ev.frameMembers.sill, (v) => {
         if (!(v > 0)) return 'Must be greater than 0.';
-        const newM = { ...frameMembers, sill: v };
+        const newM = { ...ev.frameMembers, sill: v };
         const newOpeningH = getOpeningH(overallH, newM);
-        const err = validateTreeAgainstSize(root, openingW, newOpeningH);
+        const err = validateTreeAgainstSize(ev.root, openingW, newOpeningH);
         if (err) return err;
-        frameMembers.sill = v; document.getElementById('sillInput').value = v; render(); return null;
+        ev.frameMembers.sill = v; document.getElementById('sillInput').value = v; render(); return null;
       });
     }
     if (g.jambLPx > 13) {
-      makeEditableLabel(diagram, g.left + g.jambLPx / 2, (g.top + g.bottom) / 2, frameMembers.jambL, (v) => {
+      makeEditableLabel(diagram, g.left + g.jambLPx / 2, (g.top + g.bottom) / 2, ev.frameMembers.jambL, (v) => {
         if (!(v > 0)) return 'Must be greater than 0.';
-        const newM = { ...frameMembers, jambL: v };
+        const newM = { ...ev.frameMembers, jambL: v };
         const newOpeningW = getOpeningW(overallW, newM);
-        const err = validateTreeAgainstSize(root, newOpeningW, openingH);
+        const err = validateTreeAgainstSize(ev.root, newOpeningW, openingH);
         if (err) return err;
-        frameMembers.jambL = v; document.getElementById('jambLInput').value = v; render(); return null;
+        ev.frameMembers.jambL = v; document.getElementById('jambLInput').value = v; render(); return null;
       }, -90);
     }
     if (g.jambRPx > 13) {
-      makeEditableLabel(diagram, g.contentRight + g.jambRPx / 2, (g.top + g.bottom) / 2, frameMembers.jambR, (v) => {
+      makeEditableLabel(diagram, g.contentRight + g.jambRPx / 2, (g.top + g.bottom) / 2, ev.frameMembers.jambR, (v) => {
         if (!(v > 0)) return 'Must be greater than 0.';
-        const newM = { ...frameMembers, jambR: v };
+        const newM = { ...ev.frameMembers, jambR: v };
         const newOpeningW = getOpeningW(overallW, newM);
-        const err = validateTreeAgainstSize(root, newOpeningW, openingH);
+        const err = validateTreeAgainstSize(ev.root, newOpeningW, openingH);
         if (err) return err;
-        frameMembers.jambR = v; document.getElementById('jambRInput').value = v; render(); return null;
+        ev.frameMembers.jambR = v; document.getElementById('jambRInput').value = v; render(); return null;
       }, -90);
     }
   }
@@ -1231,6 +1336,7 @@ function buildDimensionLabels(diagram, openingW, openingH, m, g, bars) {
 }
 
 function buildOriginMarkers(diagram, openingH, m, g) {
+  const ev = activeElevation();
   const main = mainOrigin(openingH, m);
   const mainPx = toPx(g, main.x, main.y);
   const mainDot = document.createElement('div');
@@ -1245,8 +1351,8 @@ function buildOriginMarkers(diagram, openingH, m, g) {
   mainLabel.textContent = 'main origin';
   diagram.appendChild(mainLabel);
 
-  if (customOrigin) {
-    const cPx = toPx(g, customOrigin.x, customOrigin.y);
+  if (ev.customOrigin) {
+    const cPx = toPx(g, ev.customOrigin.x, ev.customOrigin.y);
     const cDot = document.createElement('div');
     cDot.style.cssText = 'position:absolute;width:9px;height:9px;border-radius:50%;background:#ffd23f;border:1px solid #111;transform:translate(-50%,-50%);pointer-events:none;z-index:4;';
     cDot.style.left = cPx.x + 'px';
@@ -1262,29 +1368,30 @@ function buildOriginMarkers(diagram, openingH, m, g) {
 }
 
 function renderToolbar() {
+  const ev = activeElevation();
   const bar = document.getElementById('toolbar');
   bar.innerHTML = '';
 
-  if (!selected) {
+  if (!ev.selected) {
     bar.innerHTML = '<span class="hint">Click a region to select it, then split it or assign it a type.</span>';
     return;
   }
 
-  if (selected.isBar) {
-    const node = getNode(selected.path);
+  if (ev.selected.isBar) {
+    const node = getNode(ev.selected.path);
     const canRemove = !isDivided(node.children[0]) && !isDivided(node.children[1]);
     const row = document.createElement('div');
     row.className = 'toolbar-row';
     const removeBtn = document.createElement('button');
-    removeBtn.textContent = selected.isOverlap ? 'Remove this sash' : 'Remove this split';
+    removeBtn.textContent = ev.selected.isOverlap ? 'Remove this sash' : 'Remove this split';
     removeBtn.disabled = !canRemove;
     removeBtn.onclick = () => {
-      if (selected.isOverlap) {
-        setNode(selected.path, emptyNode());
+      if (ev.selected.isOverlap) {
+        setNode(ev.selected.path, emptyNode());
       } else {
-        setNode(selected.path, cloneForSplit(node.children[0]));
+        setNode(ev.selected.path, cloneForSplit(node.children[0]));
       }
-      selected = null;
+      ev.selected = null;
       render();
     };
     row.appendChild(removeBtn);
@@ -1301,29 +1408,29 @@ function renderToolbar() {
     // Batch 17: no longer excludes isOverlap — a -win preset's top-level node can itself be a
     // sashSplit (see confirmAssemblyPreset), so its own overlap "bar" now carries the marker.
     if ((node.kind === 'split' || node.kind === 'sashSplit') && node.assemblyPresetRef) {
-      appendEditAssemblyWidthsButton(bar, selected.path, node.assemblyPresetRef);
+      appendEditAssemblyWidthsButton(bar, ev.selected.path, node.assemblyPresetRef);
     }
     return;
   }
 
-  const rect = lastLeafRects[pathKey(selected.path)];
+  const rect = ev.lastLeafRects[pathKey(ev.selected.path)];
 
-  if (pendingSplit) {
+  if (ev.pendingSplit) {
     const openingH = getOpeningH(getOverallH(), getMembers());
     const m = getMembers();
     const origin = activeOrigin(openingH, m);
 
-    if (pendingSplit.mode === 'preset') {
+    if (ev.pendingSplit.mode === 'preset') {
       renderAssemblyPresetForm(bar, rect);
       return;
     }
 
-    if (pendingSplit.mode === 'editAssembly') {
+    if (ev.pendingSplit.mode === 'editAssembly') {
       renderAssemblyPresetForm(bar, null);
       return;
     }
 
-    if (pendingSplit.mode === 'sash') {
+    if (ev.pendingSplit.mode === 'sash') {
       const row = document.createElement('div');
       row.className = 'inline-form';
       row.innerHTML =
@@ -1351,7 +1458,7 @@ function renderToolbar() {
       const cancelBtn = document.createElement('button');
       cancelBtn.className = 'secondary';
       cancelBtn.textContent = 'Cancel';
-      cancelBtn.onclick = () => { pendingSplit = null; render(); };
+      cancelBtn.onclick = () => { ev.pendingSplit = null; render(); };
       btnRow.appendChild(confirmBtn);
       btnRow.appendChild(cancelBtn);
       bar.appendChild(btnRow);
@@ -1362,7 +1469,7 @@ function renderToolbar() {
       return;
     }
 
-    if (pendingSplit.mode === 'unframed') {
+    if (ev.pendingSplit.mode === 'unframed') {
       // Batch 23: an unframed silicone joint still needs a position (where along the region it
       // sits), same as mullion/transom — the only thing genuinely different is there's no
       // thickness input at all (always 0mm, not merely defaulted to 0) and an explicit axis
@@ -1394,7 +1501,7 @@ function renderToolbar() {
       const cancelBtn = document.createElement('button');
       cancelBtn.className = 'secondary';
       cancelBtn.textContent = 'Cancel';
-      cancelBtn.onclick = () => { pendingSplit = null; render(); };
+      cancelBtn.onclick = () => { ev.pendingSplit = null; render(); };
       btnRow.appendChild(confirmBtn);
       btnRow.appendChild(cancelBtn);
       bar.appendChild(btnRow);
@@ -1405,7 +1512,7 @@ function renderToolbar() {
       return;
     }
 
-    const axis = pendingSplit.mode === 'mullion' ? 'v' : 'h';
+    const axis = ev.pendingSplit.mode === 'mullion' ? 'v' : 'h';
     const axisLabel = axis === 'v' ? 'mullion' : 'transom';
     const available = axis === 'v' ? rect.w : rect.h;
     const suggestedCenterAbs = axis === 'v' ? (rect.x + rect.w / 2) : (rect.y + rect.h / 2);
@@ -1428,7 +1535,7 @@ function renderToolbar() {
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'secondary';
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.onclick = () => { pendingSplit = null; render(); };
+    cancelBtn.onclick = () => { ev.pendingSplit = null; render(); };
     btnRow.appendChild(confirmBtn);
     btnRow.appendChild(cancelBtn);
     bar.appendChild(btnRow);
@@ -1439,21 +1546,21 @@ function renderToolbar() {
     return;
   }
 
-  const node = getNode(selected.path);
+  const node = getNode(ev.selected.path);
   // Item 5: if this region sits inside a hinged door panel, restrict which types are offered.
   // Moved up (batch 10) since the new assembly-preset button also needs it.
-  const hingedDoorAncestor = findHingedDoorAncestor(selected.path);
+  const hingedDoorAncestor = findHingedDoorAncestor(ev.selected.path);
   const row1 = document.createElement('div');
   row1.className = 'toolbar-row';
   const mullionBtn = document.createElement('button');
   mullionBtn.textContent = 'Add mullion (split | )';
-  mullionBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'mullion' }; render(); };
+  mullionBtn.onclick = () => { ev.pendingSplit = { path: ev.selected.path, mode: 'mullion' }; render(); };
   const transomBtn = document.createElement('button');
   transomBtn.textContent = 'Add transom (split —)';
-  transomBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'transom' }; render(); };
+  transomBtn.onclick = () => { ev.pendingSplit = { path: ev.selected.path, mode: 'transom' }; render(); };
   const sashBtn = document.createElement('button');
   sashBtn.textContent = 'Add sash (overlap)';
-  sashBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'sash' }; render(); };
+  sashBtn.onclick = () => { ev.pendingSplit = { path: ev.selected.path, mode: 'sash' }; render(); };
   // Batch 23: a real, separate toolbar button — not a checkbox on an existing one, per the
   // addendum's own confirmed UI decision. Same selection-then-split interaction pattern as
   // mullion/transom/sash above.
@@ -1469,7 +1576,7 @@ function renderToolbar() {
     unframedBtn.disabled = true;
     unframedBtn.title = 'Unframed joints are only available for fixed glass windows — change this pane\'s type first.';
   } else {
-    unframedBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'unframed' }; render(); };
+    unframedBtn.onclick = () => { ev.pendingSplit = { path: ev.selected.path, mode: 'unframed' }; render(); };
   }
   const presetBtn = document.createElement('button');
   presetBtn.textContent = 'Apply assembly preset';
@@ -1480,7 +1587,7 @@ function renderToolbar() {
     presetBtn.disabled = true;
     presetBtn.title = 'Not allowed as a child of a hinged door panel.';
   } else {
-    presetBtn.onclick = () => { pendingSplit = { path: selected.path, mode: 'preset' }; render(); };
+    presetBtn.onclick = () => { ev.pendingSplit = { path: ev.selected.path, mode: 'preset' }; render(); };
   }
   row1.appendChild(mullionBtn);
   row1.appendChild(transomBtn);
@@ -1491,7 +1598,7 @@ function renderToolbar() {
 
   // Batch 12: this leaf's ancestor chain may include a marked assembly-preset split (the
   // common case — a leaf selected inside an OXXO's own sections).
-  const assemblyPresetAncestor = findAssemblyPresetAncestor(selected.path);
+  const assemblyPresetAncestor = findAssemblyPresetAncestor(ev.selected.path);
   if (assemblyPresetAncestor) {
     appendEditAssemblyWidthsButton(bar, assemblyPresetAncestor.path, assemblyPresetAncestor.assemblyPresetRef);
   }
@@ -1576,10 +1683,10 @@ function renderToolbar() {
         newNode.bladeWidthMM = node.bladeWidthMM || 0;
         // Default bladeLengthMM to the pane's own current glazed width so it starts sensible;
         // preserved across re-assignment if it was already set (e.g. clicking Louvre again).
-        const rect = lastLeafRects[pathKey(selected.path)];
+        const rect = ev.lastLeafRects[pathKey(ev.selected.path)];
         newNode.bladeLengthMM = (node.bladeLengthMM != null) ? node.bladeLengthMM : (rect ? Math.round(rect.w) : 0);
       }
-      setNode(selected.path, newNode);
+      setNode(ev.selected.path, newNode);
       render();
     };
     return b;
@@ -1642,7 +1749,7 @@ function renderToolbar() {
         select.appendChild(opt);
       });
       select.addEventListener('change', () => {
-        setNode(selected.path, { ...node, hingeEdge: select.value });
+        setNode(ev.selected.path, { ...node, hingeEdge: select.value });
         render();
       });
       row4.appendChild(label);
@@ -1661,7 +1768,7 @@ function renderToolbar() {
         select.appendChild(opt);
       });
       select.addEventListener('change', () => {
-        setNode(selected.path, { ...node, slideDirection: select.value });
+        setNode(ev.selected.path, { ...node, slideDirection: select.value });
         render();
       });
       row4.appendChild(label);
@@ -1680,7 +1787,7 @@ function renderToolbar() {
         select.appendChild(opt);
       });
       select.addEventListener('change', () => {
-        setNode(selected.path, { ...node, slideDirection: select.value });
+        setNode(ev.selected.path, { ...node, slideDirection: select.value });
         render();
       });
       row4.appendChild(label);
@@ -1689,7 +1796,7 @@ function renderToolbar() {
     const clearBtn = document.createElement('button');
     clearBtn.className = 'secondary';
     clearBtn.textContent = 'Clear (mark empty)';
-    clearBtn.onclick = () => { setNode(selected.path, emptyNode()); render(); };
+    clearBtn.onclick = () => { setNode(ev.selected.path, emptyNode()); render(); };
     row4.appendChild(clearBtn);
     if (row4.children.length) bar.appendChild(row4);
   }
@@ -1710,7 +1817,7 @@ function renderToolbar() {
     input.value = getSashEdges(node).top;
     input.style.cssText = 'width:80px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;';
     input.addEventListener('change', () => {
-      setNode(selected.path, withUniformSashMM(node, Number(input.value) || 0));
+      setNode(ev.selected.path, withUniformSashMM(node, Number(input.value) || 0));
       render();
     });
     row5.appendChild(label);
@@ -1725,7 +1832,7 @@ function renderToolbar() {
   if (node.kind === 'filled' && node.type === 'louvre') {
     const row6 = document.createElement('div');
     row6.className = 'toolbar-row';
-    const rect = lastLeafRects[pathKey(selected.path)];
+    const rect = ev.lastLeafRects[pathKey(ev.selected.path)];
     const defaultLength = rect ? Math.round(rect.w) : 0;
 
     const widthLabel = document.createElement('span');
@@ -1738,7 +1845,7 @@ function renderToolbar() {
     widthInput.placeholder = 'e.g. 150';
     widthInput.style.cssText = 'width:80px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;';
     widthInput.addEventListener('change', () => {
-      setNode(selected.path, { ...node, bladeWidthMM: Number(widthInput.value) || 0 });
+      setNode(ev.selected.path, { ...node, bladeWidthMM: Number(widthInput.value) || 0 });
       render();
     });
 
@@ -1754,7 +1861,7 @@ function renderToolbar() {
     lengthInput.value = (node.bladeLengthMM != null) ? node.bladeLengthMM : defaultLength;
     lengthInput.style.cssText = 'width:80px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;';
     lengthInput.addEventListener('change', () => {
-      setNode(selected.path, { ...node, bladeLengthMM: Number(lengthInput.value) || 0 });
+      setNode(ev.selected.path, { ...node, bladeLengthMM: Number(lengthInput.value) || 0 });
       render();
     });
 
@@ -1794,8 +1901,9 @@ function appendEditAssemblyWidthsButton(bar, markedPath, assemblyPresetRef) {
     // path with isBar:false — a synthetic "leaf-shaped" selection that won't match a real entry
     // in lastLeafRects, which is fine: the editAssembly branch below passes `null` for `rect`
     // and gets everything it needs from `pendingSplit.path` instead.
-    selected = { path: markedPath, isBar: false };
-    pendingSplit = {
+    const ev = activeElevation();
+    ev.selected = { path: markedPath, isBar: false };
+    ev.pendingSplit = {
       path: markedPath, mode: 'editAssembly',
       pattern: assemblyPresetRef.pattern, productClass: assemblyPresetRef.productClass,
       id: assemblyPresetRef.id
@@ -1817,9 +1925,10 @@ function appendEditAssemblyWidthsButton(bar, markedPath, assemblyPresetRef) {
 // state that needs to survive a re-render lives on `pendingSplit` itself, since renderToolbar()
 // rebuilds the DOM from scratch each call.
 function renderAssemblyPresetForm(bar, rect) {
-  const isEditing = pendingSplit.mode === 'editAssembly';
+  const ev = activeElevation();
+  const isEditing = ev.pendingSplit.mode === 'editAssembly';
 
-  if (!isEditing && !pendingSplit.chosenPreset) {
+  if (!isEditing && !ev.pendingSplit.chosenPreset) {
     ASSEMBLY_PRESET_CATEGORIES.forEach(category => {
       const heading = document.createElement('div');
       heading.className = 'toolbar-group-label';
@@ -1843,13 +1952,13 @@ function renderAssemblyPresetForm(bar, rect) {
           // Batch 15: preset.id is now carried through (previously discarded) — the catalog is
           // keyed by id, not pattern, since e.g. 'OX' (sliding doors) and 'OX-win' (sliding
           // windows) share the same pattern string but have distinct catalog size data.
-          pendingSplit.chosenPreset = { pattern: preset.pattern, id: preset.id, productClass: category.productClass, family: category.family };
-          pendingSplit.widths = null;
+          ev.pendingSplit.chosenPreset = { pattern: preset.pattern, id: preset.id, productClass: category.productClass, family: category.family };
+          ev.pendingSplit.widths = null;
           // Batch 15: clear any catalog match left over from a previously chosen preset — the
           // pre-fill logic below only sets this when a fresh match is actually found, so a
           // preset with no catalog entry at all would otherwise leave the previous preset's
           // stale "Closest standard size" line showing.
-          pendingSplit.matchedCatalogSize = null;
+          ev.pendingSplit.matchedCatalogSize = null;
           // Batch 22: casement genuinely supports true butt-joint construction (confirmed — no
           // reference drawing shows a mullion at all), so a fresh casement selection needs an
           // explicit include/exclude-mullion choice before the width form renders. Stated
@@ -1858,7 +1967,7 @@ function renderAssemblyPresetForm(bar, rect) {
           // norm — easy to challenge/flip later if this default turns out wrong. Awning always
           // has a real mullion/transom (confirmed, no toggle) — this field is simply irrelevant
           // and unused for every other family.
-          if (category.family === 'casement') pendingSplit.includeMullion = false;
+          if (category.family === 'casement') ev.pendingSplit.includeMullion = false;
           render();
         };
         iconRow.appendChild(btn);
@@ -1871,24 +1980,24 @@ function renderAssemblyPresetForm(bar, rect) {
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'secondary';
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.onclick = () => { pendingSplit = null; render(); };
+    cancelBtn.onclick = () => { ev.pendingSplit = null; render(); };
     cancelRow.appendChild(cancelBtn);
     bar.appendChild(cancelRow);
     return;
   }
 
-  const pattern = isEditing ? pendingSplit.pattern : pendingSplit.chosenPreset.pattern;
-  const productClass = isEditing ? pendingSplit.productClass : pendingSplit.chosenPreset.productClass;
+  const pattern = isEditing ? ev.pendingSplit.pattern : ev.pendingSplit.chosenPreset.pattern;
+  const productClass = isEditing ? ev.pendingSplit.productClass : ev.pendingSplit.chosenPreset.productClass;
   // Batch 17: the actual preset id ('OX-win', etc) — needed (not just pattern) to tell a -win
   // preset apart from its plain sliding-door sibling. Fresh creation reads it from the picker's
   // chosenPreset; editing reads it from the assemblyPresetRef marker (batch 17 added `id` to
   // that marker specifically so this would be recoverable on reopen).
-  const id = isEditing ? pendingSplit.id : pendingSplit.chosenPreset.id;
+  const id = isEditing ? ev.pendingSplit.id : ev.pendingSplit.chosenPreset.id;
   // Batch 13: fresh creation carries `family` straight from the picker (chosenPreset.family).
   // Editing has no such field to read — the assemblyPresetRef marker only ever stores
   // { pattern, productClass, id } (id added batch 17) — so it's re-derived from the pattern
   // string itself via detectPresetFamily.
-  const family = isEditing ? detectPresetFamily(pattern) : pendingSplit.chosenPreset.family;
+  const family = isEditing ? detectPresetFamily(pattern) : ev.pendingSplit.chosenPreset.family;
 
   // Batch 14: double-hung's confirm form is shaped completely differently from every other
   // family — shared unit width/height/transom/mullion instead of N separate section-width
@@ -1914,7 +2023,7 @@ function renderAssemblyPresetForm(bar, rect) {
   // treating it as false there (the fresh-creation default) would incorrectly hide the mullion
   // input for an existing casement preset that genuinely has a real mullion between sections.
   const isCasement = family === 'casement';
-  const includeMullion = (isCasement && !isEditing) ? !!pendingSplit.includeMullion : true;
+  const includeMullion = (isCasement && !isEditing) ? !!ev.pendingSplit.includeMullion : true;
   if (!isEditing && isCasement) {
     const toggleRow = document.createElement('div');
     toggleRow.className = 'toolbar-row';
@@ -1923,11 +2032,11 @@ function renderAssemblyPresetForm(bar, rect) {
     const yesBtn = document.createElement('button');
     yesBtn.className = includeMullion ? '' : 'secondary';
     yesBtn.textContent = 'Yes';
-    yesBtn.onclick = () => { pendingSplit.includeMullion = true; pendingSplit.widths = null; render(); };
+    yesBtn.onclick = () => { ev.pendingSplit.includeMullion = true; ev.pendingSplit.widths = null; render(); };
     const noBtn = document.createElement('button');
     noBtn.className = includeMullion ? 'secondary' : '';
     noBtn.textContent = 'No';
-    noBtn.onclick = () => { pendingSplit.includeMullion = false; pendingSplit.widths = null; render(); };
+    noBtn.onclick = () => { ev.pendingSplit.includeMullion = false; ev.pendingSplit.widths = null; render(); };
     toggleRow.appendChild(toggleLabel);
     toggleRow.appendChild(yesBtn);
     toggleRow.appendChild(noBtn);
@@ -1939,10 +2048,10 @@ function renderAssemblyPresetForm(bar, rect) {
   // Batch 12: pre-fill from CURRENT live state the first time this form renders in edit mode
   // (pendingSplit.widths starts unset) — not creation-time values, and not recomputed on every
   // keystroke re-render (which would fight whatever the person is actively typing).
-  if (isEditing && pendingSplit.widths == null) {
-    const current = getAssemblyPresetCurrentState(pendingSplit.path, sectionCount, pattern, id);
-    pendingSplit.widths = current.widths;
-    pendingSplit.mullionThickness = current.mullionThickness;
+  if (isEditing && ev.pendingSplit.widths == null) {
+    const current = getAssemblyPresetCurrentState(ev.pendingSplit.path, sectionCount, pattern, id);
+    ev.pendingSplit.widths = current.widths;
+    ev.pendingSplit.mullionThickness = current.mullionThickness;
   }
 
   // Batch 15: catalog-informed default section widths — creation only, never editAssembly
@@ -1952,8 +2061,8 @@ function renderAssemblyPresetForm(bar, rect) {
   // findClosestCatalogSize returns null when this preset id has no catalog entry at all — in
   // that case pendingSplit.matchedCatalogSize stays unset and the widths inputs are left at
   // whatever this batch's predecessor already left them (blank), matching the required fallback.
-  if (!isEditing && pendingSplit.widths == null && pendingSplit.chosenPreset.id != null) {
-    const match = findClosestCatalogSize(pendingSplit.chosenPreset.id, rect.h, rect.w);
+  if (!isEditing && ev.pendingSplit.widths == null && ev.pendingSplit.chosenPreset.id != null) {
+    const match = findClosestCatalogSize(ev.pendingSplit.chosenPreset.id, rect.h, rect.w);
     // Batch 20: a sliding-overlap id's prefill must solve against the REAL selected region width
     // (rect.w) — not the matched catalog entry's own stated total, and not a hardcoded 600/660
     // fallback when no catalog entry exists. The catalog total and the region's actual width are
@@ -1963,8 +2072,8 @@ function renderAssemblyPresetForm(bar, rect) {
     // "closest standard size" info-line display (batch 15) — just no longer used to DRIVE the
     // prefilled widths for a sliding-overlap id.
     if (isSlidingOverlapId(id, pattern)) {
-      pendingSplit.widths = computeSlidingWinPrefillWidths(pattern, rect.w, hasFrame);
-      if (match) pendingSplit.matchedCatalogSize = match;
+      ev.pendingSplit.widths = computeSlidingWinPrefillWidths(pattern, rect.w, ev.hasFrame);
+      if (match) ev.pendingSplit.matchedCatalogSize = match;
     } else if (family === 'casement' || family === 'awning') {
       // Batch 22: same "solve against real available space" principle as the batch-20 sliding
       // fix — the old equal-split-of-catalog-total prefill ignored the region's real width
@@ -1973,11 +2082,11 @@ function renderAssemblyPresetForm(bar, rect) {
       // repurpose catalog data) but no longer drives the prefilled widths for these two families.
       const mullionForPrefill = includeMullion ? getMullionPrefillMM() : 0;
       const mullionCount = includeMullion ? sectionCount - 1 : 0;
-      pendingSplit.widths = computeAssemblyPrefillWidths(sectionCount, rect.w, mullionForPrefill, mullionCount);
-      if (match) pendingSplit.matchedCatalogSize = match;
+      ev.pendingSplit.widths = computeAssemblyPrefillWidths(sectionCount, rect.w, mullionForPrefill, mullionCount);
+      if (match) ev.pendingSplit.matchedCatalogSize = match;
     } else if (match) {
-      pendingSplit.widths = new Array(sectionCount).fill(match.widthMM / sectionCount);
-      pendingSplit.matchedCatalogSize = match;
+      ev.pendingSplit.widths = new Array(sectionCount).fill(match.widthMM / sectionCount);
+      ev.pendingSplit.matchedCatalogSize = match;
     }
   }
 
@@ -1989,8 +2098,8 @@ function renderAssemblyPresetForm(bar, rect) {
   // overlap join (computeSlidingWinTotalWidth), same formula used by confirmAssemblyEdit itself.
   const availableWidth = isEditing
     ? (isSlidingOverlapId(id, pattern)
-        ? computeSlidingWinTotalWidth(pattern, pendingSplit.widths)
-        : pendingSplit.widths.reduce((a, b) => a + (b || 0), 0) + (sectionCount - 1) * (pendingSplit.mullionThickness || 0))
+        ? computeSlidingWinTotalWidth(pattern, ev.pendingSplit.widths)
+        : ev.pendingSplit.widths.reduce((a, b) => a + (b || 0), 0) + (sectionCount - 1) * (ev.pendingSplit.mullionThickness || 0))
     : rect.w;
 
   if (!isEditing) {
@@ -2001,7 +2110,7 @@ function renderAssemblyPresetForm(bar, rect) {
     backBtn.textContent = '← Choose a different preset';
     // Batch 15: clear the catalog match too, for the same reason as the picker's own click
     // handler — otherwise a stale info line from the previously chosen preset could persist.
-    backBtn.onclick = () => { pendingSplit.chosenPreset = null; pendingSplit.widths = null; pendingSplit.matchedCatalogSize = null; render(); };
+    backBtn.onclick = () => { ev.pendingSplit.chosenPreset = null; ev.pendingSplit.widths = null; ev.pendingSplit.matchedCatalogSize = null; render(); };
     backRow.appendChild(backBtn);
     bar.appendChild(backRow);
   }
@@ -2009,11 +2118,11 @@ function renderAssemblyPresetForm(bar, rect) {
   // Batch 15: only shown when a catalog match was actually found (creation mode, this preset id
   // has catalog data) — absent entirely otherwise, per spec ("don't show the line at all" when
   // there's no catalog entry or this is an edit).
-  if (!isEditing && pendingSplit.matchedCatalogSize) {
+  if (!isEditing && ev.pendingSplit.matchedCatalogSize) {
     const catalogInfo = document.createElement('div');
     catalogInfo.style.cssText = 'color:var(--text-dim);font-size:12px;margin-top:4px;';
-    catalogInfo.textContent = 'Closest standard size: ' + pendingSplit.matchedCatalogSize.heightMM +
-      ' × ' + pendingSplit.matchedCatalogSize.widthMM + 'mm';
+    catalogInfo.textContent = 'Closest standard size: ' + ev.pendingSplit.matchedCatalogSize.heightMM +
+      ' × ' + ev.pendingSplit.matchedCatalogSize.widthMM + 'mm';
     bar.appendChild(catalogInfo);
   }
 
@@ -2028,7 +2137,7 @@ function renderAssemblyPresetForm(bar, rect) {
   const isPlainOXPattern = /^[OX]+$/.test(pattern);
   const widthsRow = document.createElement('div');
   widthsRow.className = 'inline-form';
-  const widths = pendingSplit.widths || {};
+  const widths = ev.pendingSplit.widths || {};
   for (let i = 0; i < sectionCount; i++) {
     const wLabel = document.createElement('span');
     wLabel.textContent = isPlainOXPattern
@@ -2058,7 +2167,7 @@ function renderAssemblyPresetForm(bar, rect) {
     // set it from live tree state in the pre-fill block above), default to the current jamb width
     // rather than a flat 45. Prefill only — the field stays independently editable afterward,
     // exactly like the catalog-size width prefill (batch 15) already behaves; nothing here locks it.
-    mullionInput.value = pendingSplit.mullionThickness != null ? pendingSplit.mullionThickness : getMullionPrefillMM();
+    mullionInput.value = ev.pendingSplit.mullionThickness != null ? ev.pendingSplit.mullionThickness : getMullionPrefillMM();
     widthsRow.appendChild(mullionLabel);
     widthsRow.appendChild(mullionInput);
   }
@@ -2073,19 +2182,19 @@ function renderAssemblyPresetForm(bar, rect) {
   const confirmBtn = document.createElement('button');
   confirmBtn.textContent = isEditing ? 'Confirm resize' : 'Confirm preset';
   confirmBtn.onclick = () => {
-    if (isEditing) confirmAssemblyEdit(pendingSplit.path, pattern, availableWidth, sectionCount, id);
+    if (isEditing) confirmAssemblyEdit(ev.pendingSplit.path, pattern, availableWidth, sectionCount, id);
     else confirmAssemblyPreset(rect, pattern, productClass, family, id);
   };
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'secondary';
   cancelBtn.textContent = 'Cancel';
   cancelBtn.onclick = () => {
-    pendingSplit = null;
+    ev.pendingSplit = null;
     // Batch 12: in edit mode, `selected` was pointed at the marked split's own path (a
     // synthetic, non-leaf "selection") purely to get the editAssembly form to render at all —
     // clear it back to nothing on cancel rather than leaving that synthetic selection active,
     // which would otherwise show a confusing generic toolbar for a path that isn't a real leaf.
-    if (isEditing) selected = null;
+    if (isEditing) ev.selected = null;
     render();
   };
   btnRow.appendChild(confirmBtn);
@@ -2112,7 +2221,7 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   const backBtn = document.createElement('button');
   backBtn.className = 'secondary';
   backBtn.textContent = '← Choose a different preset';
-  backBtn.onclick = () => { pendingSplit.chosenPreset = null; render(); };
+  backBtn.onclick = () => { activeElevation().pendingSplit.chosenPreset = null; render(); };
   backRow.appendChild(backBtn);
   bar.appendChild(backRow);
 
@@ -2193,7 +2302,7 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'secondary';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.onclick = () => { pendingSplit = null; render(); };
+  cancelBtn.onclick = () => { activeElevation().pendingSplit = null; render(); };
   btnRow.appendChild(confirmBtn);
   btnRow.appendChild(cancelBtn);
   bar.appendChild(btnRow);
@@ -2229,6 +2338,7 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
 // node's overlapMM is set, so it can never again believe topHeight===bottomHeight while the real
 // rendered geometry disagrees.
 function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
+  const ev = activeElevation();
   const errDiv = document.getElementById('presetWidthError');
   const unitWidth = Number(document.getElementById('dhUnitWidthInput').value);
   const topHeight = Number(document.getElementById('dhTopHeightInput').value);
@@ -2242,7 +2352,7 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
     errDiv.textContent = 'Top height ' + Math.round(topHeight) + 'mm and derived bottom height ' +
       Math.round(bottomHeight) + 'mm (region height ' + Math.round(rect.h) + 'mm minus top height ' +
       'plus the ' + DOUBLE_HUNG_OVERLAP_MM + 'mm overlap' +
-      (hasFrame ? ' plus the ' + FRAME_TUCKIN_MM + 'mm frame tuck-in' : '') +
+      (ev.hasFrame ? ' plus the ' + FRAME_TUCKIN_MM + 'mm frame tuck-in' : '') +
       ') must each be at least ' + MIN_PANE_MM + 'mm.';
     return;
   }
@@ -2258,8 +2368,8 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
   // Same defensive hingedDoorRef propagation as confirmAssemblyPreset — unreachable in
   // practice today since the "Apply assembly preset" button is disabled entirely when nested
   // in a hinged door, regardless of family, but built consistently in case that ever changes.
-  const targetNode = getNode(pendingSplit.path);
-  const existingAncestor = findHingedDoorAncestor(pendingSplit.path);
+  const targetNode = getNode(ev.pendingSplit.path);
+  const existingAncestor = findHingedDoorAncestor(ev.pendingSplit.path);
   const carriedHingedDoorRef = (targetNode.kind === 'filled' && targetNode.productClass === 'door' && targetNode.type === 'hinged')
     ? { hingeEdge: targetNode.hingeEdge || 'left' }
     : (existingAncestor ? existingAncestor.hingedDoorRef : null);
@@ -2278,9 +2388,9 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
   // deliberately never offers "Edit assembly widths" for this marker (see
   // appendEditAssemblyWidthsButton) even though the marker itself is stamped identically.
   if (isMarkableTree) tree.assemblyPresetRef = { pattern, productClass };
-  setNode(pendingSplit.path, tree);
-  pendingSplit = null;
-  selected = null;
+  setNode(ev.pendingSplit.path, tree);
+  ev.pendingSplit = null;
+  ev.selected = null;
   render();
 }
 
@@ -2289,6 +2399,7 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
 // must know -win-ness) and to stamp it into assemblyPresetRef so a later "Edit assembly
 // widths" reopen can still tell a -win id apart from its plain-pattern sliding-door sibling.
 function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
+  const ev = activeElevation();
   const errDiv = document.getElementById('presetWidthError');
   const sectionCount = getPresetSectionCount(pattern, family);
   const sectionWidths = [];
@@ -2306,7 +2417,7 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
   // situation — a true butt-joint has no mullion input rendered at all (no DOM element to read),
   // so this must not unconditionally read presetMullionInput any more than the sliding-overlap
   // case does.
-  const noMullionAtAll = isSlidingOverlapId(id, pattern) || (family === 'casement' && !pendingSplit.includeMullion);
+  const noMullionAtAll = isSlidingOverlapId(id, pattern) || (family === 'casement' && !ev.pendingSplit.includeMullion);
   const mullionThickness = noMullionAtAll ? 0 : Number(document.getElementById('presetMullionInput').value);
   if (!noMullionAtAll && !(mullionThickness > 0)) {
     errDiv.textContent = 'Enter a mullion thickness greater than 0.';
@@ -2329,14 +2440,14 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
   }
   // Preserve entered values on the pendingSplit in case render() is called again before the
   // tree is committed (not currently possible on this path, but keeps state consistent).
-  pendingSplit.widths = sectionWidths;
-  pendingSplit.mullionThickness = mullionThickness;
+  ev.pendingSplit.widths = sectionWidths;
+  ev.pendingSplit.mullionThickness = mullionThickness;
 
   // Item: presets are disabled from the toolbar entirely when nested in a hinged door (see the
   // "Apply assembly preset" button), so hingedDoorRef propagation isn't reachable via this path
   // today — but built defensively the same way confirmSplit does, in case that ever changes.
-  const targetNode = getNode(pendingSplit.path);
-  const existingAncestor = findHingedDoorAncestor(pendingSplit.path);
+  const targetNode = getNode(ev.pendingSplit.path);
+  const existingAncestor = findHingedDoorAncestor(ev.pendingSplit.path);
   const carriedHingedDoorRef = (targetNode.kind === 'filled' && targetNode.productClass === 'door' && targetNode.type === 'hinged')
     ? { hingeEdge: targetNode.hingeEdge || 'left' }
     : (existingAncestor ? existingAncestor.hingedDoorRef : null);
@@ -2361,9 +2472,9 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
   // a -win preset apart from its plain sliding-door sibling ('OX' vs 'OX-win' share a pattern),
   // and a later "Edit assembly widths" reopen needs to know which tree-building rule applies.
   if (isMarkableTree) tree.assemblyPresetRef = { pattern, productClass, id };
-  setNode(pendingSplit.path, tree);
-  pendingSplit = null;
-  selected = null;
+  setNode(ev.pendingSplit.path, tree);
+  ev.pendingSplit = null;
+  ev.selected = null;
   render();
 }
 
@@ -2457,6 +2568,7 @@ function getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id) {
 // mullion input at all (its joins are overlap/flush, never a separate mullion member), so its
 // entered-total check uses computeSlidingWinTotalWidth instead of sectionWidths+mullions.
 function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, id) {
+  const ev = activeElevation();
   const errDiv = document.getElementById('presetWidthError');
   const sectionWidths = [];
   for (let i = 0; i < sectionCount; i++) {
@@ -2510,7 +2622,7 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
   // Height doesn't change in this edit; read it straight off the marked split's OWN rect
   // (lastNodeRects covers every node, not just leaves, so this works regardless of whether any
   // individual section has since been subdivided further).
-  const markedRect = lastNodeRects[pathKey(markedPath)];
+  const markedRect = ev.lastNodeRects[pathKey(markedPath)];
   const currentHeight = markedRect ? markedRect.h : null;
   if (currentHeight != null) {
     const sizeErr = validateTreeAgainstSize(node, availableWidth, currentHeight);
@@ -2523,12 +2635,13 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
   }
 
   setNode(markedPath, node);
-  pendingSplit = null;
-  selected = null;
+  ev.pendingSplit = null;
+  ev.selected = null;
   render();
 }
 
 function confirmSplit(axis, rect) {
+  const ev = activeElevation();
   const openingH = getOpeningH(getOverallH(), getMembers());
   const m = getMembers();
   const origin = activeOrigin(openingH, m);
@@ -2548,7 +2661,7 @@ function confirmSplit(axis, rect) {
       'mm — each side needs at least ' + MIN_PANE_MM + 'mm. Adjust the position or bar width.';
     return;
   }
-  const node = getNode(pendingSplit.path);
+  const node = getNode(ev.pendingSplit.path);
   const newSplit = {
     kind: 'split', axis, posMM: pos, thicknessMM: thickness,
     children: [cloneForSplit(node), cloneForSplit(node)]
@@ -2563,14 +2676,14 @@ function confirmSplit(axis, rect) {
   // split door just drew its own individual symbol. Fix: stamp the split node itself with a
   // hingedDoorRef marker whenever the node being split either IS a hinged door panel, or was
   // itself already inside one (so nesting deeper than one level still propagates correctly).
-  const existingAncestor = findHingedDoorAncestor(pendingSplit.path);
+  const existingAncestor = findHingedDoorAncestor(ev.pendingSplit.path);
   const carriedHingedDoorRef = (node.kind === 'filled' && node.productClass === 'door' && node.type === 'hinged')
     ? { hingeEdge: node.hingeEdge || 'left' }
     : (existingAncestor ? existingAncestor.hingedDoorRef : null);
   if (carriedHingedDoorRef) newSplit.hingedDoorRef = carriedHingedDoorRef;
-  setNode(pendingSplit.path, newSplit);
-  pendingSplit = null;
-  selected = null;
+  setNode(ev.pendingSplit.path, newSplit);
+  ev.pendingSplit = null;
+  ev.selected = null;
   render();
 }
 
@@ -2604,6 +2717,7 @@ function confirmSplit(axis, rect) {
 // so collapsing back to children[0] already restores that edge to normal/editable/unlocked with
 // no joint-specific removal code needed here at all.
 function confirmUnframedJoint(rect) {
+  const ev = activeElevation();
   const errDiv = document.getElementById('splitError');
   const axisSelect = document.getElementById('unframedAxisSelect');
   const axis = axisSelect ? axisSelect.value : 'v';
@@ -2620,7 +2734,7 @@ function confirmUnframedJoint(rect) {
       'mm — each side needs at least ' + MIN_PANE_MM + 'mm. Adjust the position.';
     return;
   }
-  const node = getNode(pendingSplit.path);
+  const node = getNode(ev.pendingSplit.path);
   // Batch 24: an unframed joint is only ever valid between fixed-glass window panes — this is
   // enforced defensively here too, not only by the unframedBtn gate, so the invariant holds even
   // if this function is ever reached some other way. cloneForSplit(emptyNode()) would return
@@ -2660,14 +2774,14 @@ function confirmUnframedJoint(rect) {
     isSiliconeJoint: true,
     children: [childA, childB]
   };
-  const existingAncestor = findHingedDoorAncestor(pendingSplit.path);
+  const existingAncestor = findHingedDoorAncestor(ev.pendingSplit.path);
   const carriedHingedDoorRef = (node.kind === 'filled' && node.productClass === 'door' && node.type === 'hinged')
     ? { hingeEdge: node.hingeEdge || 'left' }
     : (existingAncestor ? existingAncestor.hingedDoorRef : null);
   if (carriedHingedDoorRef) newSplit.hingedDoorRef = carriedHingedDoorRef;
-  setNode(pendingSplit.path, newSplit);
-  pendingSplit = null;
-  selected = null;
+  setNode(ev.pendingSplit.path, newSplit);
+  ev.pendingSplit = null;
+  ev.selected = null;
   render();
 }
 
@@ -3092,7 +3206,7 @@ function isSlidingOverlapId(id, pattern) {
 // testable/traceable against an explicit value without depending on global state, and matches
 // this batch's own call site, which passes it explicitly.
 function computeSlidingWinPrefillWidths(pattern, totalWidthMM, hasFrameFlag) {
-  const useFrame = hasFrameFlag === undefined ? hasFrame : hasFrameFlag;
+  const useFrame = hasFrameFlag === undefined ? activeElevation().hasFrame : hasFrameFlag;
   const slideDirections = computeDefaultSlideDirections(pattern);
   const n = pattern.length;
   let overlapJoins = 0;
@@ -3122,7 +3236,7 @@ function computeSlidingWinTotalWidth(pattern, sectionWidthsMM) {
   for (let i = 0; i < pattern.length - 1; i++) {
     if (classifySlidingWinJoin(pattern, i, slideDirections).type === 'overlap') total -= SLIDING_OVERLAP_MM;
   }
-  if (hasFrame) total -= FRAME_TUCKIN_MM;
+  if (activeElevation().hasFrame) total -= FRAME_TUCKIN_MM;
   return total;
 }
 
@@ -3360,7 +3474,7 @@ const DOUBLE_HUNG_OVERLAP_MM = 60;
 // actually determines the rendered bottom pane height; every caller that needs double-hung's
 // overlap value now goes through this one function so they can never diverge again.
 function getDoubleHungOverlapMM() {
-  return DOUBLE_HUNG_OVERLAP_MM + (hasFrame ? FRAME_TUCKIN_MM : 0);
+  return DOUBLE_HUNG_OVERLAP_MM + (activeElevation().hasFrame ? FRAME_TUCKIN_MM : 0);
 }
 function buildDoubleHungUnit(productClass, topHeightMM) {
   return {
@@ -3400,6 +3514,7 @@ function buildPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productCl
 }
 
 function confirmSashSplit(rect) {
+  const ev = activeElevation();
   const [axis, fromEdge] = document.getElementById('sashEdgeSelect').value.split('-');
   const sashSize = Number(document.getElementById('sashSizeInput').value);
   const overlap = Number(document.getElementById('sashOverlapInput').value);
@@ -3424,13 +3539,13 @@ function confirmSashSplit(rect) {
     sashLeaf = { kind: 'filled', type: 'horizontal-slider', productClass: 'window', slideDirection: dir, sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM };
   }
   if (remainder <= 0.01) {
-    setNode(pendingSplit.path, sashLeaf);
+    setNode(ev.pendingSplit.path, sashLeaf);
   } else {
     const children = fromEdge === 'start' ? [sashLeaf, emptyNode()] : [emptyNode(), sashLeaf];
-    setNode(pendingSplit.path, { kind: 'sashSplit', axis, fromEdge, sashSizeMM: sashSize, overlapMM: overlap, children });
+    setNode(ev.pendingSplit.path, { kind: 'sashSplit', axis, fromEdge, sashSizeMM: sashSize, overlapMM: overlap, children });
   }
-  pendingSplit = null;
-  selected = null;
+  ev.pendingSplit = null;
+  ev.selected = null;
   render();
 }
 
@@ -3479,18 +3594,19 @@ function renderTable(leaves) {
 }
 
 document.getElementById('diagram').addEventListener('click', (e) => {
-  if (placingOrigin) {
+  const ev = activeElevation();
+  if (ev.placingOrigin) {
     const overallW = getOverallW(), overallH = getOverallH(), m = getMembers();
     const openingW = getOpeningW(overallW, m), openingH = getOpeningH(overallH, m);
     // Reuse the geometry from the last render() (item 8's extra gutters included) rather than
     // recomputing frameGeom from scratch here — recomputing without the current extraTop/
     // extraRight would misalign click coordinates whenever chain-dimension stacking is active.
-    const g = lastGeom || frameGeom(overallW * SCALE, overallH * SCALE, m, 0, 0);
+    const g = ev.lastGeom || frameGeom(overallW * SCALE, overallH * SCALE, m, 0, 0);
     const diagram = document.getElementById('diagram');
     const rect = diagram.getBoundingClientRect();
     const xmm = (e.clientX - rect.left - g.contentLeft) / SCALE;
     const ymm = (e.clientY - rect.top - g.contentTop) / SCALE;
-    const candidates = buildSnapCandidates(openingW, openingH, m, lastLeaves, lastBars);
+    const candidates = buildSnapCandidates(openingW, openingH, m, ev.lastLeaves, ev.lastBars);
     let best = null, bestDistPx = 18;
     candidates.forEach(c => {
       const dx = (c.x - xmm) * SCALE, dy = (c.y - ymm) * SCALE;
@@ -3498,18 +3614,19 @@ document.getElementById('diagram').addEventListener('click', (e) => {
       if (d < bestDistPx) { bestDistPx = d; best = c; }
     });
     const minX = -m.jambL, maxX = openingW + m.jambR, minY = -m.head, maxY = openingH + m.sill;
-    customOrigin = best ? { x: best.x, y: best.y } : { x: Math.max(minX, Math.min(maxX, xmm)), y: Math.max(minY, Math.min(maxY, ymm)) };
-    placingOrigin = false;
+    ev.customOrigin = best ? { x: best.x, y: best.y } : { x: Math.max(minX, Math.min(maxX, xmm)), y: Math.max(minY, Math.min(maxY, ymm)) };
+    ev.placingOrigin = false;
     render();
     return;
   }
-  selected = null; pendingSplit = null; render();
+  ev.selected = null; ev.pendingSplit = null; render();
 });
 
 // Item 10: validate overall width/height edits (from the plain number inputs, not just the
 // on-drawing dblclick labels) before committing, since shrinking the overall size now cascades
 // down through every split in the tree.
 function handleOverallInput(id, errId, isWidth) {
+  const ev = activeElevation();
   const input = document.getElementById(id);
   const errEl = document.getElementById(errId);
   const newVal = Number(input.value) || 0;
@@ -3520,19 +3637,19 @@ function handleOverallInput(id, errId, isWidth) {
   const newOpeningH = getOpeningH(otherOverallH, m);
   if (newOpeningW < MIN_PANE_MM || newOpeningH < MIN_PANE_MM) {
     errEl.textContent = 'Opening would be too small at this overall size.';
-    input.value = isWidth ? lastValidOverallW : lastValidOverallH;
+    input.value = isWidth ? ev.lastValidOverallW : ev.lastValidOverallH;
     render();
     return;
   }
-  const err = validateTreeAgainstSize(root, newOpeningW, newOpeningH);
+  const err = validateTreeAgainstSize(ev.root, newOpeningW, newOpeningH);
   if (err) {
     errEl.textContent = err;
-    input.value = isWidth ? lastValidOverallW : lastValidOverallH;
+    input.value = isWidth ? ev.lastValidOverallW : ev.lastValidOverallH;
     render();
     return;
   }
   errEl.textContent = '';
-  if (isWidth) lastValidOverallW = newVal; else lastValidOverallH = newVal;
+  if (isWidth) ev.lastValidOverallW = newVal; else ev.lastValidOverallH = newVal;
   render();
 }
 // Item 10: overall width/height commit on 'change' (blur/Enter), not on every keystroke —
@@ -3541,15 +3658,16 @@ function handleOverallInput(id, errId, isWidth) {
 document.getElementById('frameW').addEventListener('change', () => handleOverallInput('frameW', 'frameWError', true));
 document.getElementById('frameH').addEventListener('change', () => handleOverallInput('frameH', 'frameHError', false));
 
-document.getElementById('resetBtn').addEventListener('click', () => { root = emptyNode(); selected = null; pendingSplit = null; render(); });
-document.getElementById('toggleFrameBtn').addEventListener('click', () => { hasFrame = !hasFrame; render(); });
+document.getElementById('resetBtn').addEventListener('click', () => { const ev = activeElevation(); ev.root = emptyNode(); ev.selected = null; ev.pendingSplit = null; render(); });
+document.getElementById('toggleFrameBtn').addEventListener('click', () => { const ev = activeElevation(); ev.hasFrame = !ev.hasFrame; render(); });
 
 function handleFrameMemberInput(id, key, errId) {
+  const ev = activeElevation();
   const input = document.getElementById(id);
   const errEl = document.getElementById(errId);
   const newVal = Number(input.value) || 0;
-  const prevVal = frameMembers[key];
-  const newM = { ...frameMembers, [key]: newVal };
+  const prevVal = ev.frameMembers[key];
+  const newM = { ...ev.frameMembers, [key]: newVal };
   const overallW = getOverallW(), overallH = getOverallH();
   const newOpeningW = getOpeningW(overallW, newM);
   const newOpeningH = getOpeningH(overallH, newM);
@@ -3559,7 +3677,7 @@ function handleFrameMemberInput(id, key, errId) {
     render();
     return;
   }
-  const err = validateTreeAgainstSize(root, newOpeningW, newOpeningH);
+  const err = validateTreeAgainstSize(ev.root, newOpeningW, newOpeningH);
   if (err) {
     errEl.textContent = err;
     input.value = prevVal;
@@ -3567,25 +3685,26 @@ function handleFrameMemberInput(id, key, errId) {
     return;
   }
   errEl.textContent = '';
-  frameMembers[key] = newVal;
+  ev.frameMembers[key] = newVal;
   render();
 }
 [['headInput', 'head', 'headInputError'], ['sillInput', 'sill', 'sillInputError'], ['jambLInput', 'jambL', 'jambLInputError'], ['jambRInput', 'jambR', 'jambRInputError']].forEach(([id, key, errId]) => {
   document.getElementById(id).addEventListener('change', () => handleFrameMemberInput(id, key, errId));
 });
 
-document.getElementById('placeOriginBtn').addEventListener('click', () => { placingOrigin = !placingOrigin; render(); });
-document.getElementById('resetOriginBtn').addEventListener('click', () => { customOrigin = null; placingOrigin = false; render(); });
+document.getElementById('placeOriginBtn').addEventListener('click', () => { const ev = activeElevation(); ev.placingOrigin = !ev.placingOrigin; render(); });
+document.getElementById('resetOriginBtn').addEventListener('click', () => { const ev = activeElevation(); ev.customOrigin = null; ev.placingOrigin = false; render(); });
 document.getElementById('coordOriginBtn').addEventListener('click', () => {
   const form = document.getElementById('coordOriginForm');
   form.style.display = form.style.display === 'none' ? 'flex' : 'none';
 });
 document.getElementById('setCoordOriginBtn').addEventListener('click', () => {
+  const ev = activeElevation();
   const openingH = getOpeningH(getOverallH(), getMembers());
   const ex = Number(document.getElementById('originXInput').value) || 0;
   const ey = Number(document.getElementById('originYInput').value) || 0;
-  customOrigin = { x: ex, y: openingH - ey };
-  placingOrigin = false;
+  ev.customOrigin = { x: ex, y: openingH - ey };
+  ev.placingOrigin = false;
   render();
 });
 
