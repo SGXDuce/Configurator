@@ -86,8 +86,9 @@
 
 <!-- Legend temporarily removed (batch 3, item 3) — pending a rebuild once the type system stabilises. -->
 
-<!-- Batch 25: elevation tab bar — left empty/hidden by renderElevationTabs() whenever there's
-     only one elevation, so a single-elevation file looks exactly as it did before this batch. -->
+<!-- Batch 25/26: elevation tab bar. With a single elevation this shows only the minimal "Add
+     angled join" entry point (batch 26); tabs plus "Remove angled join" appear once a second,
+     linked elevation exists. renderElevationTabs() rebuilds this on every render(). -->
 <div id="elevationTabs" class="elevation-tabs" style="display:none;"></div>
 
 <h2>Opening</h2>
@@ -177,6 +178,44 @@ const PRESET_SASH_EDGES = { sashTopMM: 60, sashLeftMM: 60, sashRightMM: 60, sash
 const DIM_ROW_STEP = 20; // px between stacked chain-dimension rows
 const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent split-dimension labels
 
+// ===== BATCH LOG (canonical — check this before assigning a new batch number; do not trust an
+// external doc alone, it can go stale between sessions). This block is APPEND-ONLY: every future
+// batch, in every session, must add its own one-line entry here as part of that batch's own
+// change — not as an afterthought, not left to whoever writes the project summary next. =====
+// 1-8:  see project summary for individual detail; early single-elevation core (tree model,
+//       rendering, hinge symbols, item-numbered bug fixes referenced inline as "Item N (batch M)")
+// 9:    per-edge sash frame width (sashTopMM/sashBottomMM/sashLeftMM/sashRightMM)
+// 10:   assembly-preset button entry point groundwork
+// 11:   assembly preset categories + picker UI
+// 12:   assembly preset reopen/resize ("Edit assembly widths") + assemblyPresetRef marker
+// 13:   casement/awning preset trees, icons, shared fold/scaffold helpers
+// 14:   double-hung preset family (units, not flat leaves), its own confirm form
+// 15:   catalog-informed default section widths (NGR price list), ASSEMBLY_PRESET_CATALOG_SIZES
+// 16:   real per-type default sash edge shape (PRESET_SASH_EDGES) + mullion-thickness = jamb prefill
+// 17:   sliding-window overlap (-win ids), fromEdge/sashSplit structural change
+// 18:   sliding overlap tuck-in correction (FRAME_TUCKIN_MM) + extend overlap to sliding doors
+// 19:   double-hung transom converted to a real 60mm overlap (sashSplit), transomThickness removed
+// 20:   sliding prefill fix (solve against real region width) + double-hung auto-prefill
+// 21:   double-hung asymmetric tuck-in correction (batch 20 fix)
+// 22:   casement/awning sash width prefill (real space) + casement no-mullion toggle
+// 23:   unframed silicone butt-joint mechanism (flat, same-elevation case) — isSiliconeJoint,
+//       sash*Locked flags, hasLockedEdge groundwork, withUniformSashMM skip-locked-edge behaviour
+// 24:   restrict unframed silicone joints to fixed glass, window-only panes — hasLockedEdge() gate
+//       on makeTypeButton, "Add unframed joint" button gating, confirmUnframedJoint forcing
+// 25:   two-elevation state model + tab switcher — elevations[] array, setActiveElevationIndex,
+//       renderElevationTabs, TEMPORARY uncapped "+ Add elevation" placeholder button (see its own
+//       comment above renderElevationTabs — meant to be replaced, not kept alongside, once the
+//       real flat-vs-angled trigger below is built)
+// 26:   angled join meeting-edge tag + real second-elevation trigger — meetingEdges on each
+//       elevation (all four edges in the data shape, jambs only wired up in UI), "Add angled
+//       join" replacing the batch-25 placeholder "+ Add elevation" button, blocking rule reusing
+//       the batch-24 fixed/window restriction pattern, join removal deletes elevation 2
+// 27:   fix batch-24 loophole — Clear button ("Clear (mark empty)") dropped sash*Locked flags when
+//       emptying a joint-locked pane, silently defeating batch 24's restriction on that edge once
+//       cleared. Fixed: hasLockedEdge() widened to also match kind:'empty' nodes carrying lock
+//       flags; Clear button now carries those flags forward onto the resulting empty node.
+// ===== END BATCH LOG =====
+
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
 // sashRightMM — replacing the old single sashFrameMM. The UI still exposes only one "Sash
 // frame width (mm)" input, which sets all four to the same value (see the toolbar input's
@@ -199,8 +238,10 @@ function getSashEdges(node) {
 // match the existing sashTopMM/sashBottomMM/sashLeftMM/sashRightMM per-edge convention exactly
 // (sashTopLocked/sashBottomLocked/sashLeftLocked/sashRightLocked), rather than a differently-
 // shaped parallel structure (e.g. a lockedEdges array/set).
+// Batch 27: widened to also match kind:'empty' — Clear can leave a pane empty while it still
+// carries lock flags (see the Clear button below), and this must keep seeing those.
 function hasLockedEdge(node) {
-  return !!(node.kind === 'filled' && (node.sashTopLocked || node.sashBottomLocked || node.sashLeftLocked || node.sashRightLocked));
+  return !!((node.kind === 'filled' || node.kind === 'empty') && (node.sashTopLocked || node.sashBottomLocked || node.sashLeftLocked || node.sashRightLocked));
 }
 function withUniformSashMM(node, mm) {
   const next = { ...node };
@@ -246,6 +287,21 @@ function newElevation(name) {
     placingOrigin: false,
     hasFrame: false,
     frameMembers: { head: 60, sill: 60, jambL: 60, jambR: 60 },
+    // Batch 26 — meeting-edge tags (§7.4/§5's meeting-edge no-jamb requirement). One physical
+    // product can turn a corner in real 3D space; each elevation drawing stays flat, and the edge
+    // where two linked elevations meet has no jamb of its own. Shaped to hold all four frame
+    // members even though only jambL/jambR are reachable from the UI in this batch — head/sill
+    // meeting edges are physically real and will be wanted later; turning them on must be a UI
+    // change only, never a data-model rewrite, so nothing here (or in getMembers()/lock checks
+    // below) hard-codes "jambs only". Value is null (normal framed edge) or 'meeting' (joins the
+    // other elevation via meetingLink). A third value, 'unframed' (deliberately unframed, e.g. a
+    // masonry reveal with no added jamb — see the project summary's "unrestricted zero-frame
+    // escape hatch" gap), is planned but explicitly not implemented by this batch.
+    meetingEdges: { head: null, sill: null, jambL: null, jambR: null },
+    // Set only on the edge tagged 'meeting' above; identifies which edge of the OTHER elevation
+    // it joins. Null on every edge that isn't tagged 'meeting'. Not a general adjacency graph —
+    // with a hard cap of two elevations, "the other elevation" is unambiguous without an index.
+    meetingLink: { head: null, sill: null, jambL: null, jambR: null },
     // Remember the last valid overall dims so a rejected edit can be rolled back cleanly.
     lastValidOverallW: 1800,
     lastValidOverallH: 2100
@@ -287,14 +343,6 @@ function setActiveElevationIndex(index) {
   render();
 }
 
-function addElevation() {
-  const outgoing = activeElevation();
-  outgoing.overallW = getOverallW();
-  outgoing.overallH = getOverallH();
-  elevations.push(newElevation('Elevation ' + (elevations.length + 1)));
-  setActiveElevationIndex(elevations.length - 1);
-}
-
 // Batch 25: the per-tab switcher strip is entirely absent (display:none, no tab elements built,
 // not merely visually hidden) whenever there's only one elevation — per this batch's own "no new
 // UI clutter for the single-elevation case" requirement. Assumption made here, not spelled out
@@ -304,11 +352,14 @@ function addElevation() {
 // sense the prompt meant (a whole tab strip/switcher UI for a case that doesn't exist yet).
 // Flagging this as a judgment call, not something the prompt itself resolved.
 //
-// TEMPORARY, batch 25 only: this button is a placeholder entry point, not the real one. The
-// actual trigger for creating a linked second elevation is the flat-vs-angled choice (§7.4),
-// which batch 26 is responsible for building. When batch 26 lands, it should REPLACE this
-// button and its addElevation() wiring with that real trigger — not leave both to coexist as
-// two separate ways to add an elevation.
+// Batch 26: replaces the batch-25 placeholder "+ Add elevation" button with the real trigger —
+// "Add angled join" is the ONLY way to reach a second elevation now (grep confirms no other
+// pathway survives: addElevation() itself was removed above, not just unwired). Clicking it
+// swaps the button for an inline jamb-choice picker (angledJoinPickerOpen, built below); confirming
+// a jamb calls addAngledJoin(jamb) above. Once a second elevation exists, the "Add angled join"
+// control is unavailable (hard cap of 2, elevations.length >= 2 branch below) and a "Remove
+// angled join" button appears instead, wired to removeAngledJoin() above.
+let angledJoinPickerOpen = false;
 function renderElevationTabs() {
   const wrap = document.getElementById('elevationTabs');
   wrap.innerHTML = '';
@@ -321,14 +372,35 @@ function renderElevationTabs() {
       tab.addEventListener('click', () => setActiveElevationIndex(i));
       wrap.appendChild(tab);
     });
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'secondary';
+    removeBtn.textContent = 'Remove angled join';
+    removeBtn.onclick = removeAngledJoin;
+    wrap.appendChild(removeBtn);
+    return;
   }
-  // TEMPORARY placeholder button (batch 25) — see the comment above this function. Remove this
-  // button and its addElevation() call once batch 26's real flat-vs-angled trigger (§7.4) exists.
-  const addBtn = document.createElement('button');
-  addBtn.className = 'secondary';
-  addBtn.textContent = '+ Add elevation';
-  addBtn.onclick = addElevation;
-  wrap.appendChild(addBtn);
+  if (!angledJoinPickerOpen) {
+    const addBtn = document.createElement('button');
+    addBtn.className = 'secondary';
+    addBtn.textContent = 'Add angled join';
+    addBtn.onclick = () => { angledJoinPickerOpen = true; render(); };
+    wrap.appendChild(addBtn);
+    return;
+  }
+  const label = document.createElement('span');
+  label.textContent = 'Which jamb meets the other elevation? ';
+  wrap.appendChild(label);
+  MEETING_EDGE_UI_JAMBS.forEach(jamb => {
+    const btn = document.createElement('button');
+    btn.textContent = MEETING_EDGE_LABELS[jamb].replace(/^./, c => c.toUpperCase());
+    btn.onclick = () => { angledJoinPickerOpen = false; addAngledJoin(jamb); };
+    wrap.appendChild(btn);
+  });
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'secondary';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => { angledJoinPickerOpen = false; render(); };
+  wrap.appendChild(cancelBtn);
 }
 
 // ---- Pane type vocabulary --------------------------------------------------
@@ -519,7 +591,19 @@ function isAllowedInHingedDoor(type, hingeEdge) {
 
 function getOverallW() { return Number(document.getElementById('frameW').value) || 0; }
 function getOverallH() { return Number(document.getElementById('frameH').value) || 0; }
-function getMembers() { const ev = activeElevation(); return ev.hasFrame ? ev.frameMembers : { head: 0, sill: 0, jambL: 0, jambR: 0 }; }
+// Batch 26: a meeting-tagged edge has no jamb regardless of hasFrame — the outer-frame toggle
+// and the meeting tag are independent (§7.4/§5), so this forces that member to 0 even when
+// hasFrame is true, on top of (not instead of) the existing hasFrame:false all-zero behaviour.
+function getMembers() {
+  const ev = activeElevation();
+  const base = ev.hasFrame ? ev.frameMembers : { head: 0, sill: 0, jambL: 0, jambR: 0 };
+  return {
+    head: ev.meetingEdges.head ? 0 : base.head,
+    sill: ev.meetingEdges.sill ? 0 : base.sill,
+    jambL: ev.meetingEdges.jambL ? 0 : base.jambL,
+    jambR: ev.meetingEdges.jambR ? 0 : base.jambR
+  };
+}
 function getOpeningW(overallW, m) { return overallW - m.jambL - m.jambR; }
 function getOpeningH(overallH, m) { return overallH - m.head - m.sill; }
 
@@ -709,11 +793,22 @@ function updateFrameControls() {
   const statusEl = document.getElementById('frameMemberStatus');
   const toggleBtn = document.getElementById('toggleFrameBtn');
   const fields = document.getElementById('frameMemberFields');
+  const hasAnyMeetingEdge = !!(ev.meetingEdges.head || ev.meetingEdges.sill || ev.meetingEdges.jambL || ev.meetingEdges.jambR);
   statusEl.textContent = ev.hasFrame
     ? ('Outer frame added — head ' + ev.frameMembers.head + 'mm, sill ' + ev.frameMembers.sill + 'mm, jambs ' + ev.frameMembers.jambL + '/' + ev.frameMembers.jambR + 'mm.')
     : 'No outer frame — panes butt directly into the opening.';
   toggleBtn.textContent = ev.hasFrame ? 'Remove outer frame' : 'Add outer frame';
-  fields.style.display = ev.hasFrame ? 'flex' : 'none';
+  // Batch 26: the member fields must stay visible whenever ANY edge is meeting-tagged, even with
+  // hasFrame off, so the locked 0 on that edge (and its disabled input) is visible rather than the
+  // whole fields block just disappearing.
+  fields.style.display = (ev.hasFrame || hasAnyMeetingEdge) ? 'flex' : 'none';
+  [['headInput', 'head'], ['sillInput', 'sill'], ['jambLInput', 'jambL'], ['jambRInput', 'jambR']].forEach(([id, key]) => {
+    const input = document.getElementById(id);
+    const isMeeting = !!ev.meetingEdges[key];
+    input.disabled = isMeeting;
+    input.title = isMeeting ? 'This edge joins the other elevation and has no jamb.' : '';
+    if (isMeeting) input.value = 0;
+  });
 }
 
 function render() {
@@ -1259,8 +1354,14 @@ function buildDimensionLabels(diagram, openingW, openingH, m, g, bars) {
   }, -90);
 
   if (ev.hasFrame) {
+    // Batch 26: a meeting-tagged edge refuses the edit here too, same protect-the-value pattern
+    // as sash*Locked edges — defensive, since a meeting edge also forces its member's pixel
+    // width to ~0 (getMembers()), so in practice these g.*Px > 13 guards already keep this label
+    // from appearing on a meeting edge at all; this only matters if that geometry assumption
+    // ever changes.
     if (g.headPx > 13) {
       makeEditableLabel(diagram, (g.contentLeft + g.contentRight) / 2, g.top + g.headPx / 2, ev.frameMembers.head, (v) => {
+        if (ev.meetingEdges.head) return 'This edge joins the other elevation and has no jamb.';
         if (!(v > 0)) return 'Must be greater than 0.';
         const newM = { ...ev.frameMembers, head: v };
         const newOpeningH = getOpeningH(overallH, newM);
@@ -1271,6 +1372,7 @@ function buildDimensionLabels(diagram, openingW, openingH, m, g, bars) {
     }
     if (g.sillPx > 13) {
       makeEditableLabel(diagram, (g.contentLeft + g.contentRight) / 2, g.contentBottom + g.sillPx / 2, ev.frameMembers.sill, (v) => {
+        if (ev.meetingEdges.sill) return 'This edge joins the other elevation and has no jamb.';
         if (!(v > 0)) return 'Must be greater than 0.';
         const newM = { ...ev.frameMembers, sill: v };
         const newOpeningH = getOpeningH(overallH, newM);
@@ -1281,6 +1383,7 @@ function buildDimensionLabels(diagram, openingW, openingH, m, g, bars) {
     }
     if (g.jambLPx > 13) {
       makeEditableLabel(diagram, g.left + g.jambLPx / 2, (g.top + g.bottom) / 2, ev.frameMembers.jambL, (v) => {
+        if (ev.meetingEdges.jambL) return 'This edge joins the other elevation and has no jamb.';
         if (!(v > 0)) return 'Must be greater than 0.';
         const newM = { ...ev.frameMembers, jambL: v };
         const newOpeningW = getOpeningW(overallW, newM);
@@ -1291,6 +1394,7 @@ function buildDimensionLabels(diagram, openingW, openingH, m, g, bars) {
     }
     if (g.jambRPx > 13) {
       makeEditableLabel(diagram, g.contentRight + g.jambRPx / 2, (g.top + g.bottom) / 2, ev.frameMembers.jambR, (v) => {
+        if (ev.meetingEdges.jambR) return 'This edge joins the other elevation and has no jamb.';
         if (!(v > 0)) return 'Must be greater than 0.';
         const newM = { ...ev.frameMembers, jambR: v };
         const newOpeningW = getOpeningW(overallW, newM);
@@ -1558,6 +1662,17 @@ function renderToolbar() {
   // Item 5: if this region sits inside a hinged door panel, restrict which types are offered.
   // Moved up (batch 10) since the new assembly-preset button also needs it.
   const hingedDoorAncestor = findHingedDoorAncestor(ev.selected.path);
+  // Batch 26: reuses the batch-24 fixed/window-only restriction pattern for a leaf that touches
+  // a meeting-tagged jamb — checked by matching this leaf's own rendered rect (ev.lastLeafRects,
+  // the same source makeTypeButton's louvre default already reads) against the jamb's inner-edge
+  // x-coordinate, not by walking the tree structurally, since "touches the edge" is a geometry
+  // fact, not a tree-shape one (a leaf can be arbitrarily deep and still be the outermost one).
+  const selectedRect = ev.lastLeafRects[pathKey(ev.selected.path)];
+  const toolbarOpeningW = getOpeningW(getOverallW(), getMembers());
+  const touchesMeetingJamb = selectedRect && MEETING_EDGE_UI_JAMBS.some(jamb => {
+    if (!ev.meetingEdges[jamb]) return false;
+    return jamb === 'jambL' ? Math.abs(selectedRect.x) < EDGE_TOUCH_EPS_MM : Math.abs(selectedRect.x + selectedRect.w - toolbarOpeningW) < EDGE_TOUCH_EPS_MM;
+  });
   const row1 = document.createElement('div');
   row1.className = 'toolbar-row';
   const mullionBtn = document.createElement('button');
@@ -1652,6 +1767,12 @@ function renderToolbar() {
     if (hasLockedEdge(node) && !(type === 'fixed' && productClass === 'window')) {
       b.disabled = true;
       b.title = 'This edge is part of an unframed silicone joint — only fixed glass is allowed here.';
+    }
+    // Batch 26: a pane against a meeting-tagged jamb is restricted the same way — reuses the
+    // batch-24 gate above rather than inventing a parallel mechanism, just with its own title.
+    if (touchesMeetingJamb && !(type === 'fixed' && productClass === 'window')) {
+      b.disabled = true;
+      b.title = 'This edge joins the other elevation\'s angled join — only fixed glass is allowed here.';
     }
     b.onclick = () => {
       // Item 4 (batch 8): opening type (door/window/side-panel) is independent of glazing
@@ -1804,7 +1925,18 @@ function renderToolbar() {
     const clearBtn = document.createElement('button');
     clearBtn.className = 'secondary';
     clearBtn.textContent = 'Clear (mark empty)';
-    clearBtn.onclick = () => { setNode(ev.selected.path, emptyNode()); render(); };
+    clearBtn.onclick = () => {
+      // Batch 27 fix: a locked edge (unframed silicone joint, batch 23) must survive Clear —
+      // otherwise hasLockedEdge() stops seeing it once kind:'empty' and every type button
+      // re-enables, silently breaking the joint restriction on this side only.
+      const locked = {};
+      if (node.sashTopLocked) locked.sashTopLocked = true;
+      if (node.sashBottomLocked) locked.sashBottomLocked = true;
+      if (node.sashLeftLocked) locked.sashLeftLocked = true;
+      if (node.sashRightLocked) locked.sashRightLocked = true;
+      setNode(ev.selected.path, { ...emptyNode(), ...locked });
+      render();
+    };
     row4.appendChild(clearBtn);
     if (row4.children.length) bar.appendChild(row4);
   }
@@ -2692,6 +2824,89 @@ function confirmSplit(axis, rect) {
   setNode(ev.pendingSplit.path, newSplit);
   ev.pendingSplit = null;
   ev.selected = null;
+  render();
+}
+
+// Batch 26 — angled join: meeting-edge tag + real second-elevation trigger (§7.4/§5). Reads
+// ev.lastLeaves (populated by the most recent render()'s walk()) to find which leaves currently
+// touch a given jamb — leaves are in opening-space mm with x=0 at the jambL inner edge and
+// x+w === openingW at the jambR inner edge (see walk()'s own coordinate convention). A small
+// epsilon guards against float drift from chained subtraction/addition through the tree.
+const EDGE_TOUCH_EPS_MM = 0.01;
+function leavesTouchingJamb(ev, jamb, openingW) {
+  return ev.lastLeaves.filter(l => jamb === 'jambL' ? Math.abs(l.x) < EDGE_TOUCH_EPS_MM : Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM);
+}
+// Same fixed/window restriction already enforced for unframed silicone joints (batch 24) — a
+// meeting edge is just as physically a butt joint as the flat case, so it reuses the identical
+// rule rather than inventing a parallel one. An empty leaf is fine (nothing assigned yet); a
+// filled leaf must already be type:'fixed', productClass:'window'.
+function leafAllowedAgainstMeetingEdge(node) {
+  return node.kind === 'empty' || (node.kind === 'filled' && node.type === 'fixed' && node.productClass === 'window');
+}
+
+// Only jambL/jambR are reachable from the UI in this batch (see newElevation's own comment) —
+// this keeps that restriction local to the one place that builds the UI control, not baked into
+// the data model or the helpers above, so enabling head/sill later is a UI-only change.
+const MEETING_EDGE_UI_JAMBS = ['jambL', 'jambR'];
+const MEETING_EDGE_LABELS = { jambL: 'left jamb', jambR: 'right jamb', head: 'head', sill: 'sill' };
+
+// The ONLY pathway to a second elevation after this batch (replaces batch 25's placeholder
+// "+ Add elevation"/addElevation()). Asks which jamb of the current (single) elevation is the
+// meeting edge, blocks if that edge already has non-fixed/window panes against it (per-existing
+// work must not be silently rewritten — same principle as batch 24's own gate), then tags the
+// edge, creates elevation 2, and links the two.
+function addAngledJoin(jamb) {
+  const ev = activeElevation();
+  const overallW = getOverallW();
+  const m = getMembers();
+  const openingW = getOpeningW(overallW, m);
+  const offending = leavesTouchingJamb(ev, jamb, openingW).filter(l => !leafAllowedAgainstMeetingEdge(l.node));
+  if (offending.length > 0) {
+    alert('Cannot add an angled join on the ' + MEETING_EDGE_LABELS[jamb] + ' — ' +
+      (offending.length === 1 ? 'a pane' : offending.length + ' panes') +
+      ' already against that edge ' + (offending.length === 1 ? 'is' : 'are') +
+      ' not fixed glass (window). Change ' + (offending.length === 1 ? 'that pane' : 'those panes') +
+      ' to Fixed/window first, or choose the other jamb.');
+    return;
+  }
+  ev.overallW = overallW;
+  ev.overallH = getOverallH();
+  ev.meetingEdges[jamb] = 'meeting';
+  const otherJamb = jamb === 'jambL' ? 'jambR' : 'jambL';
+  ev.meetingLink[jamb] = { edge: otherJamb };
+  const second = newElevation('Elevation 2');
+  second.meetingEdges[otherJamb] = 'meeting';
+  second.meetingLink[otherJamb] = { edge: jamb };
+  elevations.push(second);
+  setActiveElevationIndex(elevations.length - 1);
+}
+
+// Removing the join deletes elevation 2 outright (confirmed destructive per this batch's spec —
+// not just untagging the edge) after a confirm prompt, then restores elevation 1's jamb to a
+// normal, unlocked, editable member.
+function removeAngledJoin() {
+  if (elevations.length < 2) return;
+  if (!confirm('Removing this angled join will delete Elevation 2 and everything on it. This cannot be undone. Continue?')) return;
+  const wasElevation1Active = activeElevationIndex === 0;
+  const first = elevations[0];
+  MEETING_EDGE_UI_JAMBS.forEach(j => { first.meetingEdges[j] = null; first.meetingLink[j] = null; });
+  // Elevation 2 is being deleted outright, so there is nothing to "save outgoing state" for if it
+  // was the active one — unlike a normal setActiveElevationIndex switch, deliberately not reused
+  // here, since it would read/write elevations[1] after that slot no longer exists. If elevation 1
+  // was already active, its overallW/overallH only live in the DOM inputs right now (per
+  // newElevation's own comment — the object copy is only synced at switch time), so read the DOM
+  // rather than the possibly-stale first.overallW/H; if elevation 2 was active, first's own stored
+  // values are the correct, already-up-to-date source instead.
+  const restoreW = wasElevation1Active ? getOverallW() : first.overallW;
+  const restoreH = wasElevation1Active ? getOverallH() : first.overallH;
+  elevations = [first];
+  activeElevationIndex = 0;
+  document.getElementById('frameW').value = restoreW;
+  document.getElementById('frameH').value = restoreH;
+  document.getElementById('headInput').value = first.frameMembers.head;
+  document.getElementById('sillInput').value = first.frameMembers.sill;
+  document.getElementById('jambLInput').value = first.frameMembers.jambL;
+  document.getElementById('jambRInput').value = first.frameMembers.jambR;
   render();
 }
 
@@ -3673,6 +3888,13 @@ function handleFrameMemberInput(id, key, errId) {
   const ev = activeElevation();
   const input = document.getElementById(id);
   const errEl = document.getElementById(errId);
+  // Batch 26: a meeting-tagged edge is locked at 0 — refuse the edit and snap the field back,
+  // same protect-the-value pattern as sash*Locked edges (batches 23-24).
+  if (ev.meetingEdges[key]) {
+    input.value = 0;
+    errEl.textContent = 'This edge joins the other elevation and has no jamb — remove the angled join to edit it.';
+    return;
+  }
   const newVal = Number(input.value) || 0;
   const prevVal = ev.frameMembers[key];
   const newM = { ...ev.frameMembers, [key]: newVal };
