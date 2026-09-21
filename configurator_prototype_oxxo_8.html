@@ -135,6 +135,7 @@
   <tfoot><tr><td>Total</td><td></td><td></td><td></td><td id="totalPanes"></td><td id="totalArea"></td><td id="totalGlazedArea"></td><td></td></tr></tfoot>
 </table>
 <div class="warn-line" id="emptyWarning"></div>
+<div style="margin: 8px 0;"><button id="exportJsonBtn" type="button">Export JSON</button></div>
 <p class="note">
   Two ways to divide a region now: <strong>mullion/transom</strong> — a real frame member, needed wherever a plain "Fixed"
   panel (no sash of its own) sits, since it has nothing else to butt against — versus <strong>add sash</strong>, which carves
@@ -221,6 +222,15 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       arg), blocking the whole change if either side fails. Width path untouched. Also: "Glazed
 //       area" column header renamed to "Visible glazed area" (label only, glazedAreaM2() itself
 //       unchanged).
+// 29:   JSON export (schema v1, see configurator_export_schema.md) — new "Export JSON" button.
+//       collectExportGeometry() is a fresh, export-only traversal mirroring walk()'s own layout
+//       math (walk() itself untouched); resolveOverallDims() reuses batch 28's active-vs-inactive
+//       overallW/overallH quirk pattern so export is correct for both elevations regardless of
+//       which is on screen; buildExportData()/buildExportElevation() are pure reads (no mutation,
+//       no render(), no setActiveElevationIndex). Covers per-pane geometry (converted to
+//       bottom-left-from-main-origin, Y up), unframedEdgeCount (sash*Locked + meeting-jamb-touch,
+//       both sources), and frameLengthMM (sash perimeter + real mullions/transoms + outer frame,
+//       explicitly excluding sashSplit overlap joins to avoid double-counting).
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -3981,6 +3991,185 @@ document.getElementById('setCoordOriginBtn').addEventListener('click', () => {
 
 let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 100); });
+
+// Batch 29 — JSON export (schema v1, see configurator_export_schema.md). Everything below is a
+// pure read: no state mutation, no setActiveElevationIndex, no render() call. A fresh traversal
+// (collectExportGeometry) is used instead of reusing walk() or any render-time cache
+// (lastLeaves/lastNodeRects), since those are only populated for whichever elevation was last
+// rendered — export must work correctly for BOTH elevations regardless of which is on screen.
+//
+// Mirrors walk()'s own split/sashSplit layout math exactly (see walk() above), but only collects
+// what export needs: filled leaves (empty leaves skipped — export only reports assigned panes)
+// and real plain-split members (thicknessMM > 0, not a silicone joint, not a sashSplit — a
+// sashSplit's overlap has no separate physical member, see frameLengthMM below).
+function collectExportGeometry(node, x, y, w, h, labelParts, leavesOut, membersOut) {
+  if (node.kind === 'empty') return;
+  if (node.kind === 'filled') {
+    leavesOut.push({ x, y, w, h, node, label: labelParts.join('') || 'F' });
+    return;
+  }
+  if (node.kind === 'sashSplit') {
+    const remSize = Math.max(0, (node.axis === 'v' ? w : h) - node.sashSizeMM + node.overlapMM);
+    if (node.axis === 'v') {
+      if (node.fromEdge === 'start') {
+        collectExportGeometry(node.children[0], x, y, node.sashSizeMM, h, [...labelParts, '.S'], leavesOut, membersOut);
+        collectExportGeometry(node.children[1], x + node.sashSizeMM - node.overlapMM, y, remSize, h, [...labelParts, '.R'], leavesOut, membersOut);
+      } else {
+        collectExportGeometry(node.children[0], x, y, remSize, h, [...labelParts, '.R'], leavesOut, membersOut);
+        collectExportGeometry(node.children[1], x + w - node.sashSizeMM, y, node.sashSizeMM, h, [...labelParts, '.S'], leavesOut, membersOut);
+      }
+    } else {
+      if (node.fromEdge === 'start') {
+        collectExportGeometry(node.children[0], x, y, w, node.sashSizeMM, [...labelParts, '.S'], leavesOut, membersOut);
+        collectExportGeometry(node.children[1], x, y + node.sashSizeMM - node.overlapMM, w, remSize, [...labelParts, '.R'], leavesOut, membersOut);
+      } else {
+        collectExportGeometry(node.children[0], x, y, w, remSize, [...labelParts, '.R'], leavesOut, membersOut);
+        collectExportGeometry(node.children[1], x, y + h - node.sashSizeMM, w, node.sashSizeMM, [...labelParts, '.S'], leavesOut, membersOut);
+      }
+    }
+    return;
+  }
+  // plain split (mullion/transom) — only a real, non-silicone member with positive thickness
+  // counts as a physical frame member for export.
+  if (node.thicknessMM > 0 && !node.isSiliconeJoint) {
+    membersOut.push({ axis: node.axis, thicknessMM: node.thicknessMM, x, y, w, h });
+  }
+  if (node.axis === 'v') {
+    const leftW = Math.max(0, node.posMM - node.thicknessMM / 2);
+    const rightW = Math.max(0, w - node.posMM - node.thicknessMM / 2);
+    collectExportGeometry(node.children[0], x, y, leftW, h, [...labelParts, '.L'], leavesOut, membersOut);
+    collectExportGeometry(node.children[1], x + leftW + node.thicknessMM, y, rightW, h, [...labelParts, '.R'], leavesOut, membersOut);
+  } else {
+    const topH = Math.max(0, node.posMM - node.thicknessMM / 2);
+    const botH = Math.max(0, h - node.posMM - node.thicknessMM / 2);
+    collectExportGeometry(node.children[0], x, y, w, topH, [...labelParts, '.T'], leavesOut, membersOut);
+    collectExportGeometry(node.children[1], x, y + topH + node.thicknessMM, w, botH, [...labelParts, '.B'], leavesOut, membersOut);
+  }
+}
+
+// Per-elevation-index resolution of overallW/overallH — ONLY the currently-active elevation's
+// object has stale values (the live source of truth for it is the frameW/frameH DOM inputs while
+// it's active; see setActiveElevationIndex/newElevation's own comments). Every other elevation
+// field (hasFrame, frameMembers, meetingEdges, root) is live on the object regardless of active/
+// inactive. Same pattern batch 28's removeAngledJoin already uses for this exact quirk.
+function resolveOverallDims(ev, index) {
+  const overallW = (index === activeElevationIndex) ? getOverallW() : ev.overallW;
+  const overallH = (index === activeElevationIndex) ? getOverallH() : ev.overallH;
+  return { overallW, overallH };
+}
+
+function buildExportElevation(ev, index) {
+  const { overallW, overallH } = resolveOverallDims(ev, index);
+  const m = getMembers(ev);
+  const openingW = getOpeningW(overallW, m);
+  const openingH = getOpeningH(overallH, m);
+  const leaves = [];
+  const members = [];
+  collectExportGeometry(ev.root, 0, 0, openingW, openingH, [], leaves, members);
+
+  let frameLengthMM = 0;
+  const panes = leaves.map(l => {
+    const node = l.node;
+    const isFixed = node.type === 'fixed';
+    const sashEdges = isFixed ? { top: 0, bottom: 0, left: 0, right: 0 } : getSashEdges(node);
+    const areaM2 = (l.w * l.h) / 1e6;
+    const visibleGlazedAreaM2 = glazedAreaM2(l);
+
+    // Part 3 — top-down internal coords -> bottom-left corner from the true main origin
+    // (mainOrigin(), never ev.customOrigin), Y increasing upward.
+    const xMM = l.x + m.jambL;
+    const yMM = openingH + m.sill - (l.y + l.h);
+
+    // Part 4 — unframedEdgeCount: Case 2 (sash*Locked, silicone joint to a neighbour) and Case 1
+    // (this leaf's edge touches a meeting-tagged jamb) are structurally mutually exclusive per
+    // edge — a locked edge has a sibling pane on that side by construction, so it cannot also be
+    // sitting on the outer opening boundary there. Summed, not just OR'd, since in principle a
+    // leaf could have a Case-2 lock on one edge and a Case-1 meeting touch on a different edge.
+    let unframedEdgeCount = 0;
+    if (node.sashTopLocked) unframedEdgeCount++;
+    if (node.sashBottomLocked) unframedEdgeCount++;
+    if (node.sashLeftLocked) unframedEdgeCount++;
+    if (node.sashRightLocked) unframedEdgeCount++;
+    if (ev.meetingEdges.head && Math.abs(l.y) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+    if (ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+    if (ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+    if (ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+
+    // Part 5 component 1 — every non-fixed pane's own sash perimeter.
+    if (!isFixed) frameLengthMM += 2 * (l.w + l.h);
+
+    return {
+      id: l.label,
+      productClass: node.productClass,
+      type: node.type,
+      hingeEdge: node.hingeEdge != null ? node.hingeEdge : null,
+      slideDirection: node.slideDirection != null ? node.slideDirection : null,
+      bladeWidthMM: node.bladeWidthMM != null ? node.bladeWidthMM : null,
+      bladeLengthMM: node.bladeLengthMM != null ? node.bladeLengthMM : null,
+      xMM, yMM,
+      widthMM: l.w,
+      heightMM: l.h,
+      areaM2,
+      visibleGlazedAreaM2,
+      sashEdgesMM: { top: sashEdges.top, bottom: sashEdges.bottom, left: sashEdges.left, right: sashEdges.right },
+      unframedEdgeCount
+    };
+  });
+
+  // Part 5 component 2 — real mullions/transoms collected alongside the leaves above.
+  members.forEach(mem => { frameLengthMM += mem.axis === 'v' ? mem.h : mem.w; });
+
+  // Part 5 component 3 — outer frame, 0 per member when the frame is off or that member is
+  // meeting-tagged (no physical jamb/head/sill on that edge in either case).
+  const memberContributes = (key) => ev.hasFrame && !ev.meetingEdges[key];
+  if (memberContributes('head')) frameLengthMM += overallW;
+  if (memberContributes('sill')) frameLengthMM += overallW;
+  if (memberContributes('jambL')) frameLengthMM += overallH;
+  if (memberContributes('jambR')) frameLengthMM += overallH;
+
+  return {
+    name: ev.name,
+    overallWidthMM: overallW,
+    overallHeightMM: overallH,
+    hasFrame: ev.hasFrame,
+    frameMembersMM: { head: m.head, sill: m.sill, jambL: m.jambL, jambR: m.jambR },
+    meetingEdges: { head: ev.meetingEdges.head, sill: ev.meetingEdges.sill, jambL: ev.meetingEdges.jambL, jambR: ev.meetingEdges.jambR },
+    frameLengthMM,
+    panes
+  };
+}
+
+function buildExportData() {
+  const exportElevations = elevations.map((ev, i) => buildExportElevation(ev, i));
+  const totalFrameLengthMM = exportElevations.reduce((sum, e) => sum + e.frameLengthMM, 0);
+  return {
+    schemaVersion: 1,
+    system: {
+      elevationCount: elevations.length,
+      totalFrameLengthMM,
+      elevations: exportElevations
+    }
+  };
+}
+
+// Filename: elevation count + today's date (yyyy-mm-dd), e.g. "configurator-export-2elev-2026-09-21.json".
+// Not pinned down by either the batch prompt or the schema doc — flagged as an assumption, not
+// silently invented, per the batch prompt's own instruction.
+document.getElementById('exportJsonBtn').addEventListener('click', () => {
+  const data = buildExportData();
+  const json = JSON.stringify(data, null, 2);
+  const today = new Date().toISOString().slice(0, 10);
+  const filename = 'configurator-export-' + elevations.length + 'elev-' + today + '.json';
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
 
 render();
 </script>
