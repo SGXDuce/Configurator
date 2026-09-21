@@ -286,6 +286,14 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       convention (1082mm, 162mm over); resolved as 5 columns of 52mm with 4 internal 110mm bars
 //       (confirmed exact: 920mm) — the doc's "6" was itself a miscount, caught by this batch's own
 //       column-sum verification before being trusted, not assumed correct from the source text.
+// 35:   angled join stored angle (§7.4 item 3) — new system-level angledJoinAngleDeg (null when no
+//       join exists, a number 90–180 once one does; not per-elevation, not nested in meetingLink).
+//       "Add angled join" now has a second creation step (angle entry, after jamb selection);
+//       cancelling this step cancels the whole action rather than falling back to jamb selection.
+//       A persistent numeric input next to "Remove angled join" allows editing afterward, same
+//       90–180 validation, invalid entry rejected/reverted inline (never silently clamped).
+//       removeAngledJoin resets the field to null in the same block meetingEdges/meetingLink
+//       already get reset. No change to walk(), rendering, validation, or the export schema.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -382,6 +390,13 @@ function newElevation(name) {
 
 let elevations = [newElevation('Elevation 1')];
 let activeElevationIndex = 0;
+// Batch 35 — the angled join's own stored angle (degrees), per §7.4 item 3. System-level, not
+// per-elevation and not nested inside meetingLink — there is only ever one join (hard-capped at
+// 2 elevations), so one top-level value is correct, same pattern as elevations/
+// activeElevationIndex above. null whenever no join exists; a number (decimals allowed) once one
+// does. Set by addAngledJoin, editable afterward via renderElevationTabs' own input, reset to
+// null by removeAngledJoin.
+let angledJoinAngleDeg = null;
 function activeElevation() { return elevations[activeElevationIndex]; }
 
 // Batch 25 — switching elevations. overallW/overallH live in the frameW/frameH DOM inputs while
@@ -431,7 +446,16 @@ function setActiveElevationIndex(index) {
 // a jamb calls addAngledJoin(jamb) above. Once a second elevation exists, the "Add angled join"
 // control is unavailable (hard cap of 2, elevations.length >= 2 branch below) and a "Remove
 // angled join" button appears instead, wired to removeAngledJoin() above.
+//
+// Batch 35 — a second creation step, angle entry, now follows jamb selection (§7.4 item 3).
+// angledJoinPendingJamb holds the chosen jamb between the two steps (null while step 1 — jamb
+// picker — is showing; set once step 2 — angle entry — is showing). Cancelling step 2 must cancel
+// the WHOLE "Add angled join" action (not fall back to step 1) — per the batch prompt's own
+// instruction not to create a join with a null angle — so its Cancel button resets both
+// angledJoinPickerOpen and angledJoinPendingJamb together, identically to step 1's own Cancel.
 let angledJoinPickerOpen = false;
+let angledJoinPendingJamb = null;
+const ANGLED_JOIN_ANGLE_MIN = 90, ANGLED_JOIN_ANGLE_MAX = 180;
 function renderElevationTabs() {
   const wrap = document.getElementById('elevationTabs');
   wrap.innerHTML = '';
@@ -444,6 +468,32 @@ function renderElevationTabs() {
       tab.addEventListener('click', () => setActiveElevationIndex(i));
       wrap.appendChild(tab);
     });
+    // Batch 35 — persistent angle-edit input, always shown alongside "Remove angled join" for as
+    // long as the join exists. Same 90–180 validation as creation; an invalid entry is rejected
+    // and reverted inline (input snapped back to the last valid value), never silently clamped.
+    const angleLabel = document.createElement('span');
+    angleLabel.style.fontSize = '12px';
+    angleLabel.style.color = 'var(--text-dim)';
+    angleLabel.textContent = 'Join angle (deg)';
+    const angleInput = document.createElement('input');
+    angleInput.type = 'number';
+    angleInput.value = angledJoinAngleDeg;
+    angleInput.style.cssText = 'width:70px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;';
+    const angleErr = document.createElement('span');
+    angleErr.style.cssText = 'font-size:11px;color:var(--danger);';
+    angleInput.addEventListener('change', () => {
+      const v = Number(angleInput.value);
+      if (!angleInput.value.trim() || Number.isNaN(v) || v < ANGLED_JOIN_ANGLE_MIN || v > ANGLED_JOIN_ANGLE_MAX) {
+        angleErr.textContent = 'Enter a number between ' + ANGLED_JOIN_ANGLE_MIN + ' and ' + ANGLED_JOIN_ANGLE_MAX + '.';
+        angleInput.value = angledJoinAngleDeg;
+        return;
+      }
+      angleErr.textContent = '';
+      angledJoinAngleDeg = v;
+    });
+    wrap.appendChild(angleLabel);
+    wrap.appendChild(angleInput);
+    wrap.appendChild(angleErr);
     const removeBtn = document.createElement('button');
     removeBtn.className = 'secondary';
     removeBtn.textContent = 'Remove angled join';
@@ -455,24 +505,62 @@ function renderElevationTabs() {
     const addBtn = document.createElement('button');
     addBtn.className = 'secondary';
     addBtn.textContent = 'Add angled join';
-    addBtn.onclick = () => { angledJoinPickerOpen = true; render(); };
+    addBtn.onclick = () => { angledJoinPickerOpen = true; angledJoinPendingJamb = null; render(); };
     wrap.appendChild(addBtn);
     return;
   }
-  const label = document.createElement('span');
-  label.textContent = 'Which jamb meets the other elevation? ';
-  wrap.appendChild(label);
-  MEETING_EDGE_UI_JAMBS.forEach(jamb => {
-    const btn = document.createElement('button');
-    btn.textContent = MEETING_EDGE_LABELS[jamb].replace(/^./, c => c.toUpperCase());
-    btn.onclick = () => { angledJoinPickerOpen = false; addAngledJoin(jamb); };
-    wrap.appendChild(btn);
-  });
+  if (!angledJoinPendingJamb) {
+    const label = document.createElement('span');
+    label.textContent = 'Which jamb meets the other elevation? ';
+    wrap.appendChild(label);
+    MEETING_EDGE_UI_JAMBS.forEach(jamb => {
+      const btn = document.createElement('button');
+      btn.textContent = MEETING_EDGE_LABELS[jamb].replace(/^./, c => c.toUpperCase());
+      btn.onclick = () => { angledJoinPendingJamb = jamb; render(); };
+      wrap.appendChild(btn);
+    });
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'secondary';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => { angledJoinPickerOpen = false; angledJoinPendingJamb = null; render(); };
+    wrap.appendChild(cancelBtn);
+    return;
+  }
+  // Batch 35 — step 2: angle entry. No default/prefilled value (input starts empty) — explicit
+  // entry is required, per the batch prompt.
+  const angleLabel = document.createElement('span');
+  angleLabel.textContent = 'Angle between the two elevations (degrees, ' + ANGLED_JOIN_ANGLE_MIN + '–' + ANGLED_JOIN_ANGLE_MAX + '): ';
+  wrap.appendChild(angleLabel);
+  const angleInput = document.createElement('input');
+  angleInput.type = 'number';
+  angleInput.id = 'angledJoinAngleInput';
+  angleInput.style.cssText = 'width:70px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;';
+  wrap.appendChild(angleInput);
+  const angleErrDiv = document.createElement('div');
+  angleErrDiv.className = 'field-error';
+  const confirmBtn = document.createElement('button');
+  confirmBtn.textContent = 'Confirm';
+  confirmBtn.onclick = () => {
+    const raw = angleInput.value;
+    const v = Number(raw);
+    if (!raw.trim() || Number.isNaN(v) || v < ANGLED_JOIN_ANGLE_MIN || v > ANGLED_JOIN_ANGLE_MAX) {
+      angleErrDiv.textContent = 'Enter a number between ' + ANGLED_JOIN_ANGLE_MIN + ' and ' + ANGLED_JOIN_ANGLE_MAX + '.';
+      return;
+    }
+    const jamb = angledJoinPendingJamb;
+    angledJoinPickerOpen = false;
+    angledJoinPendingJamb = null;
+    addAngledJoin(jamb, v);
+  };
+  wrap.appendChild(confirmBtn);
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'secondary';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.onclick = () => { angledJoinPickerOpen = false; render(); };
+  // Cancelling this step cancels the WHOLE "Add angled join" action, per the batch prompt — does
+  // NOT fall back to the jamb-picker step.
+  cancelBtn.onclick = () => { angledJoinPickerOpen = false; angledJoinPendingJamb = null; render(); };
   wrap.appendChild(cancelBtn);
+  wrap.appendChild(angleErrDiv);
 }
 
 // ---- Pane type vocabulary --------------------------------------------------
@@ -3722,7 +3810,11 @@ const MEETING_EDGE_LABELS = { jambL: 'left jamb', jambR: 'right jamb', head: 'he
 // meeting edge, blocks if that edge already has non-fixed/window panes against it (per-existing
 // work must not be silently rewritten — same principle as batch 24's own gate), then tags the
 // edge, creates elevation 2, and links the two.
-function addAngledJoin(jamb) {
+// Batch 35 — `angleDeg` is now required (the caller, renderElevationTabs' step-2 confirm handler,
+// already validated it against ANGLED_JOIN_ANGLE_MIN/MAX before calling this, so no re-validation
+// here — same trust-the-caller convention the rest of this file already uses between a form's own
+// confirm handler and the function it calls).
+function addAngledJoin(jamb, angleDeg) {
   const ev = activeElevation();
   const overallW = getOverallW();
   const m = getMembers();
@@ -3748,6 +3840,9 @@ function addAngledJoin(jamb) {
   second.meetingEdges[otherJamb] = 'meeting';
   second.meetingLink[otherJamb] = { edge: jamb };
   elevations.push(second);
+  // Batch 35 — system-level, not per-elevation/meetingLink (see angledJoinAngleDeg's own comment
+  // above elevations/activeElevationIndex).
+  angledJoinAngleDeg = angleDeg;
   setActiveElevationIndex(elevations.length - 1);
 }
 
@@ -3760,6 +3855,9 @@ function removeAngledJoin() {
   const wasElevation1Active = activeElevationIndex === 0;
   const first = elevations[0];
   MEETING_EDGE_UI_JAMBS.forEach(j => { first.meetingEdges[j] = null; first.meetingLink[j] = null; });
+  // Batch 35 — reset the join's own stored angle alongside meetingEdges/meetingLink above; an
+  // easy field to forget since it lives at the top level, not on either elevation object.
+  angledJoinAngleDeg = null;
   // Elevation 2 is being deleted outright, so there is nothing to "save outgoing state" for if it
   // was the active one — unlike a normal setActiveElevationIndex switch, deliberately not reused
   // here, since it would read/write elevations[1] after that slot no longer exists. If elevation 1
