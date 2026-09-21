@@ -258,6 +258,20 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       bottom rail (236mm) is derived, not stated directly in the source. D7/D13's main content
 //       row needed its own two 110mm stiles added on top of the reference doc's stated 380mm
 //       content split — caught by this batch's own column-sum verification before being trusted.
+// 33:   door panel catalog data entry — D14–D20 (interchangeable bottom pair only, upper lites
+//       always fixed-glass), D23–D25 (multiply interchangeable), D32 (first real 'solid-panel'
+//       zone use). No mechanism changes. New helpers makeInterchangeablePairRow(options)/
+//       makeSingleInterchangeableRow(options, shareRef)/makeSolidPanelRow(). D14–D20/D32's own
+//       stated dimensions (110+upper+140+570=1910) leave a 190mm gap against their 2100mm
+//       reference height — resolved with a derived 190mm bottom rail, confirmed with the person
+//       before building (same convention as batch 32's D5). D23/D24/D25's own heights were not
+//       fully specified in the reference doc as originally written; exact dimensions for all
+//       three were supplied directly and verified to sum exactly before use. D32's solid-panel
+//       zone traced through both the live render path and the icon generator (not assumed) —
+//       neither has a solid-panel-specific case; both already fall through their existing
+//       isGlass:false default, so no code change was needed. D24/D25's 4 interchangeable sub-
+//       zones per door confirmed independently addressable via the picker's existing ri_ci keying
+//       with zero extra plumbing.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -653,6 +667,9 @@ function isAllowedInHingedDoor(type, hingeEdge) {
 // option for this range — 'Timber'/'Plyplanel'/'Plypanel' are the solid-timber alternatives.
 // Declared before DOOR_PANEL_CATALOG below since D22's own entry references it directly.
 const D22_MATERIAL_OPTIONS = ['glazing', 'Timber', 'Plyplanel (10mm ply G2S)', 'Plypanel (10mm+4mm ply)'];
+// Batch 33 — D14–D20's own material range (distinct from D22/D23–D25's Timber/Plyplanel/Plypanel
+// range above) — per the reference doc's text.
+const D14_20_MATERIAL_OPTIONS = ['glazing', 'MTP', 'SML (Moulds & panels)', 'MLDS (Moulds & panels)'];
 const DOOR_PANEL_CATALOG = {
   D1: {
     referenceW: 600, referenceH: 2100,
@@ -924,6 +941,183 @@ const DOOR_PANEL_CATALOG = {
       { kind: 'fixed', heightMM: 100 },
       { kind: 'fixed', heightMM: 190 }
     ]
+  },
+  // ===== Batch 33 — D14–D20 (family D, interchangeable bottom pair only) + D23–D25 (family D,
+  // fully/multiply interchangeable) + D32 (family E, solid-panel). Per
+  // door_panel_catalog_reference.md's own "D14–D20"/"D21–D31" tables.
+  //
+  // D14–D20 shared structure, per the reference doc's own "resolved" bottom-pair note: every
+  // door in this range ends in an identical 140mm fixed rail + 570mm-tall interchangeable pair
+  // (135 | 110mm fixed mullion | 135). The doc's own stated components (110 top rail + upper
+  // lite(s) totaling 1090 + 140 mid rail + 570 pair = 1910) leave a 190mm gap against the
+  // 2100mm reference height — the same gap size as D1/D3/D6's own bottom rail elsewhere in this
+  // catalog — so a derived 190mm bottom rail is added below the pair, same convention as batch
+  // 32's D5 bottom-rail derivation. Confirmed with the person before building (not silently
+  // assumed): this derived rail applies to D14–D20 and D32 (same 1910/2100 gap), NOT D22/D23/D24/
+  // D25, whose own stated dimensions already sum exactly.
+  D14: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 }, // top rail
+      { kind: 'content', shareRef: 1090, columns: makeSingleLiteRow(380) }, // upper lite, always fixed-glass
+      { kind: 'fixed', heightMM: 140 }, // mid rail
+      { kind: 'content', shareRef: 570, columns: makeInterchangeablePairRow(D14_20_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 } // derived — see block comment above
+    ]
+  },
+  // D15 — 2 stacked fixed-glass lites (533.5 each) above the mullion, 23mm bar between.
+  D15: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 533.5, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 533.5, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 570, columns: makeInterchangeablePairRow(D14_20_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D16 — 3 stacked fixed-glass lites (348 each), 2×23mm bars.
+  D16: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 348, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 348, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 348, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 570, columns: makeInterchangeablePairRow(D14_20_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D17 — same 2-lite vertical stack as D15, but EACH upper lite is itself split into 2 columns
+  // of 178.5 by a 23mm vertical bar (still always fixed-glass — the split is structural, not an
+  // interchangeable choice).
+  D17: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 533.5, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 533.5, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 570, columns: makeInterchangeablePairRow(D14_20_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D18 — same 3-lite vertical stack as D16, each lite 2-column split (178.5 each).
+  D18: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 348, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 348, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 348, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 570, columns: makeInterchangeablePairRow(D14_20_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D19 — 4 stacked lites of 255.25, EACH 2-column split (178.5 each), 3×23mm bars.
+  D19: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 255.25, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 255.25, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 255.25, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 255.25, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 570, columns: makeInterchangeablePairRow(D14_20_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D20 — 255.25 (2-col split) / 533.5 (full width) / 255.25 (2-col split), stacked, 23mm bars
+  // between all three — the only door in this range with a mixed split-vs-full-width upper stack.
+  D20: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 255.25, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 533.5, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 255.25, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 570, columns: makeInterchangeablePairRow(D14_20_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D23 — 620×2040, 4 stacked zones, ALL interchangeable, 352.5mm each, single-column (no
+  // internal split per zone), 110mm rails between every zone including top and bottom (confirmed
+  // exact against the reference height: 110+352.5+110+352.5+110+352.5+110+352.5+190 = 2040 — the
+  // final rail is 190mm, not 110, to make the sum exact; every other rail in this door is 110).
+  D23: {
+    referenceW: 620, referenceH: 2040,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 352.5, columns: makeSingleInterchangeableRow(D22_MATERIAL_OPTIONS, 400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 352.5, columns: makeSingleInterchangeableRow(D22_MATERIAL_OPTIONS, 400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 352.5, columns: makeSingleInterchangeableRow(D22_MATERIAL_OPTIONS, 400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 352.5, columns: makeSingleInterchangeableRow(D22_MATERIAL_OPTIONS, 400) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D24 — 600×2100 (different base from D22/D23 — flagged per the reference doc). 2 stacked
+  // zones, BOTH interchangeable (unlike D14's identical stack, where only the bottom one is),
+  // each itself a 2-column side-by-side pair (135 | 110mm mullion | 135) — 4 independently
+  // choosable interchangeable sub-zones total. Same D22_MATERIAL_OPTIONS range as D22/D23/D25 (the
+  // 620×2040-base family) even though D24 itself uses the 600×2100 base, per the reference doc's
+  // own D21–D31 grouping. 110+1090+140+570+190 = 2100 exact.
+  D24: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 1090, columns: makeInterchangeablePairRow(D22_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 570, columns: makeInterchangeablePairRow(D22_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D25 — same shape and column split as D24 (2 stacked interchangeable 2-column pairs), but an
+  // UNEVEN height split: 490 top / 1170 bottom (vs D24's even-feeling 1090/570 — still uneven,
+  // just less dramatically so). 110+490+140+1170+190 = 2100 exact.
+  D25: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 490, columns: makeInterchangeablePairRow(D22_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 1170, columns: makeInterchangeablePairRow(D22_MATERIAL_OPTIONS) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D32 — family E, the first real solid-panel door. Top zone (1090) is fixed glass, NOT
+  // interchangeable (per the reference doc — no material choice at all for it, same as every
+  // D14–D20 upper lite). Bottom zone (570) is `type:'solid-panel'` — decorative timber, no glass,
+  // no interchange option shown at all; renders as timber via the same isGlass:false fallback a
+  // fixed segment already uses (verified, not assumed — see this batch's report). Same 1910/2100
+  // derived-190mm-bottom-rail gap as D14–D20.
+  D32: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 1090, columns: makeSingleLiteRow(380) }, // fixed-glass, not interchangeable
+      { kind: 'fixed', heightMM: 140 },
+      { kind: 'content', shareRef: 570, columns: makeSolidPanelRow() },
+      { kind: 'fixed', heightMM: 190 } // derived — see D14–D20 block comment above
+    ]
   }
 };
 // D6's three content rows share an identical column shape (stile / fixed-glass zone / stile,
@@ -960,6 +1154,41 @@ function makeThreeColRow(colShareRef) {
     { kind: 'content', shareRef: colShareRef, zone: { type: 'fixed-glass' } },
     { kind: 'fixed', widthMM: 23 },
     { kind: 'content', shareRef: colShareRef, zone: { type: 'fixed-glass' } },
+    { kind: 'fixed', widthMM: 110 }
+  ];
+}
+// Batch 33 — the D14–D20/D24/D25 shared "interchangeable pair" row: stile / interchangeable zone
+// (135) / fixed mullion (110) / interchangeable zone (135) / stile — two INDEPENDENT
+// interchangeable zones per row, each getting its own ri_ci key from the picker's existing
+// row/column-index addressing (see renderDoorPanelStylePicker), so D24/D25's 4 total sub-zones
+// (2 rows × 2 zones each) are naturally independent with no extra plumbing needed.
+function makeInterchangeablePairRow(options) {
+  return [
+    { kind: 'fixed', widthMM: 110 },
+    { kind: 'content', shareRef: 135, zone: { type: 'interchangeable', options } },
+    { kind: 'fixed', widthMM: 110 }, // mullion between the pair
+    { kind: 'content', shareRef: 135, zone: { type: 'interchangeable', options } },
+    { kind: 'fixed', widthMM: 110 }
+  ];
+}
+// Batch 33 — D23's single-column interchangeable row: stile / one interchangeable zone / stile,
+// parameterized on content share (colShareRef defaults every D23 row to the same 400mm-ish
+// content width used by D22, since the reference doc gives no separate figure for D23's own
+// zone width — same convention as D22's own 400 already in this file).
+function makeSingleInterchangeableRow(options, contentShareRef) {
+  return [
+    { kind: 'fixed', widthMM: 110 },
+    { kind: 'content', shareRef: contentShareRef, zone: { type: 'interchangeable', options } },
+    { kind: 'fixed', widthMM: 110 }
+  ];
+}
+// Batch 33 — D32's solid-panel row: stile / one solid-panel zone (no material options at all,
+// not interchangeable) / stile. Single-use (only D32), but kept as its own named function to
+// match every other door's row-shape-as-function convention rather than an inline literal.
+function makeSolidPanelRow() {
+  return [
+    { kind: 'fixed', widthMM: 110 },
+    { kind: 'content', shareRef: 380, zone: { type: 'solid-panel' } },
     { kind: 'fixed', widthMM: 110 }
   ];
 }
