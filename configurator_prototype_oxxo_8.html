@@ -272,6 +272,20 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       isGlass:false default, so no code change was needed. D24/D25's 4 interchangeable sub-
 //       zones per door confirmed independently addressable via the picker's existing ri_ci keying
 //       with zero extra plumbing.
+// 34:   door panel catalog data entry — D63V, D64H, 65H, 65V, 66V, 66H, 67H (final drawn styles
+//       from door_panel_catalog_reference.md — completes the full supplied set; D21/D26–D31 remain
+//       outstanding, no drawings exist). Wider base sizes (620/820/920mm), all fixed-glass. New
+//       helper makeVerticalBarRow(colShareRef, colCount, barMM) for family F's genuinely 110mm-
+//       wide vertical bars (NOT the usual 23mm glazing-bar convention — confirmed deliberate for
+//       this family, not "corrected"). Real gaps found and resolved before building, not silently
+//       derived: D64H/65H/66H/67H's own stated rail+lite figures were ambiguous (multiple
+//       plausible rail-count readings, none landing exactly on 2040mm) — resolved as one 110mm
+//       rail per lite (N total) plus a derived bottom rail, confirmed with the person; 67H's lite
+//       count corrected from a miscounted 8 to 7 (the value that lands exactly on 2040mm). 66V's
+//       own stated "6 columns of 52mm" didn't sum to 920mm under this catalog's stile/bar
+//       convention (1082mm, 162mm over); resolved as 5 columns of 52mm with 4 internal 110mm bars
+//       (confirmed exact: 920mm) — the doc's "6" was itself a miscount, caught by this batch's own
+//       column-sum verification before being trusted, not assumed correct from the source text.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -1118,6 +1132,134 @@ const DOOR_PANEL_CATALOG = {
       { kind: 'content', shareRef: 570, columns: makeSolidPanelRow() },
       { kind: 'fixed', heightMM: 190 } // derived — see D14–D20 block comment above
     ]
+  },
+  // ===== Batch 34 — D63V, D64H, 65H, 65V, 66V, 66H, 67H (per door_panel_catalog_reference.md's
+  // "D63–D67 group"). Wider base sizes (620/820/920mm), all fixed-glass. Naming per the doc:
+  // V = vertical glazing bars (family F), H = horizontal lite rows (family B) — NOT one uniform
+  // structural family across the group.
+  //
+  // D63V — fully resolved, confirmed exact: stile 110 | glass 60 | bar 110 | glass 60 | bar 110 |
+  // glass 60 | stile 110 = 620mm exact. Bars here are genuinely 110mm (full stile width), NOT the
+  // usual 23mm thin glazing-bar convention used by every grid door in D6–D12 — confirmed
+  // deliberate, not "corrected" to 23mm. Vertical: single content row; the 110/190 top/bottom
+  // rail split follows the same convention as every other 2040-base door in this catalog.
+  D63V: {
+    referenceW: 620, referenceH: 2040,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 1740, columns: makeVerticalBarRow(60, 3, 110) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // D64H — family B, 4 fixed horizontal lites of 352.5mm, full 110mm rails (not thin bars).
+  // Real gap resolved before building (confirmed with the person, not silently derived from a
+  // guess): the doc's own stated "4×110 rails + 4×352.5 lites" leaves 190mm unaccounted against
+  // the 2040mm reference height — one 110mm rail precedes EACH lite (4 total, including the top),
+  // plus a derived 190mm bottom rail, same convention as D14–D20/D23/D32. Confirmed exact:
+  // 4×110+4×352.5+190 = 2040.
+  D64H: {
+    referenceW: 620, referenceH: 2040,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 352.5, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 352.5, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 352.5, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 352.5, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 190 } // derived
+    ]
+  },
+  // 65H — family B, 5 fixed horizontal lites of 260mm, same "rail precedes each lite + derived
+  // bottom rail" structure as D64H. 5×110+5×260+190 = 2040 exact.
+  '65H': {
+    referenceW: 620, referenceH: 2040,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 260, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 260, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 260, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 260, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 260, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 190 } // derived
+    ]
+  },
+  // 65V — family F (same structural shape as D63V, wider base and 4 columns instead of 3), width
+  // 820mm: stile 110 | col 67.5 | bar 110 | col 67.5 | bar 110 | col 67.5 | bar 110 | col 67.5 |
+  // stile 110 = 820mm exact. Vertical stack follows D63V's own convention (110 top rail + content
+  // + derived 190 bottom rail): 110+1740+190 = 2040 exact.
+  '65V': {
+    referenceW: 820, referenceH: 2040,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 1740, columns: makeVerticalBarRow(67.5, 4, 110) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // 66V — family F, wider still (920mm, NOT 65V's 820mm — confirmed its own genuine entry, not a
+  // duplicate label, per the reference doc's own resolved flag). Real gap found and resolved
+  // before building: the reference doc's own stated "6 columns of 52mm" doesn't sum to 920mm
+  // under this catalog's stile/bar convention (110+52+5×(110+52)+110 = 1082, 162mm over) — the
+  // arithmetic that actually lands on 920mm exact is 5 columns of 52mm with 4 internal 110mm
+  // bars (110+52+110+52+110+52+110+52+110+52+110 = 920, confirmed with the person), i.e. the
+  // doc's "6" was itself a miscount, same kind of correction 67H's lite count already needed.
+  // Same vertical convention as D63V/65V.
+  '66V': {
+    referenceW: 920, referenceH: 2040,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 1740, columns: makeVerticalBarRow(52, 5, 110) },
+      { kind: 'fixed', heightMM: 190 }
+    ]
+  },
+  // 66H — family B, 6 fixed horizontal lites of 198.3mm. 6×110+6×198.3+190.2(derived) = 2040.
+  '66H': {
+    referenceW: 620, referenceH: 2040,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 198.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 198.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 198.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 198.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 198.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 198.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 190.2 } // derived: 2040-(6*110+6*198.3)
+    ]
+  },
+  // 67H — family B, 7 fixed horizontal lites of 154.3mm (NOT 8 — the reference doc's original "8
+  // lites" figure was a miscount against the compressed source image; 7 is the value confirmed to
+  // land exactly on the 2040mm reference height with no other adjustment, so treated as correct
+  // here, but flagged as worth an independent re-check against the real drawing if one becomes
+  // available). 7×110+7×154.3+189.9(derived) = 2040.
+  '67H': {
+    referenceW: 620, referenceH: 2040,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 154.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 154.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 154.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 154.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 154.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 154.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 154.3, columns: makeSingleLiteRow(400) },
+      { kind: 'fixed', heightMM: 189.9 } // derived: 2040-(7*110+7*154.3)
+    ]
   }
 };
 // D6's three content rows share an identical column shape (stile / fixed-glass zone / stile,
@@ -1191,6 +1333,20 @@ function makeSolidPanelRow() {
     { kind: 'content', shareRef: 380, zone: { type: 'solid-panel' } },
     { kind: 'fixed', widthMM: 110 }
   ];
+}
+// Batch 34 — D63V/65V/66V's vertical-glazing-bar row (family F): stile / zone / bar / zone / bar
+// / ... / zone / stile, with `colCount` fixed-glass columns and `barMM`-wide bars between them.
+// Parameterized on bar width (unlike makeThreeColRow's hardcoded 23mm) since this family's bars
+// are genuinely full stile-width (110mm), confirmed exact against D63V's own 620mm total — NOT
+// the usual thin 23mm glazing-bar convention used everywhere else in this catalog.
+function makeVerticalBarRow(colShareRef, colCount, barMM) {
+  const row = [{ kind: 'fixed', widthMM: 110 }];
+  for (let i = 0; i < colCount; i++) {
+    row.push({ kind: 'content', shareRef: colShareRef, zone: { type: 'fixed-glass' } });
+    if (i < colCount - 1) row.push({ kind: 'fixed', widthMM: barMM });
+  }
+  row.push({ kind: 'fixed', widthMM: 110 });
+  return row;
 }
 
 // Reachable only when the selected leaf is kind:'filled', productClass:'door', and type is
