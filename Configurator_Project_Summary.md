@@ -1,5 +1,5 @@
 # Window/Door Elevation Configurator — Project Summary
-### Version: 2.7 (supersedes v2.6 — records batch 26: the meeting-edge tag mechanism and the real "Add angled join" second-elevation trigger from §7.4 are now built and traced, replacing batch 25's temporary "+ Add elevation" placeholder. See §11 for an explicit handoff summary if picking this up in a new chat.)
+### Version: 2.8 (supersedes v2.7 — records batch 28: overall height is now synced between the two elevations of an angled join, both ways, for as long as the join exists, validated against both elevations' own trees before committing (width stays independent); and the pane-table "Glazed area (m²)" column was relabelled "Visible glazed area (m²)" — label only, the computation itself is unchanged. See §11 for an explicit handoff summary if picking this up in a new chat.)
 ### Last updated: 21 September 2026
  
 ---
@@ -77,7 +77,7 @@ Every filled pane stores four independent values — `sashTopMM`, `sashBottomMM`
  
 **Batch 16 addition — real per-type default shape for preset-created panes:** `PRESET_SASH_EDGES = {sashTopMM:60, sashLeftMM:60, sashRightMM:60, sashBottomMM:86}`, sourced from Duce's own dimensional data (§7.1), is stamped on every casement and awning leaf built via the assembly-preset mechanism (`buildCasementPresetTree`/`buildAwningPresetTree`). This does **not** change the manual toolbar path (`makeTypeButton`), which still uses the uniform `DEFAULT_SASH_MM` fallback for hand-assigned/edited panes — the distinction is deliberate: only a *preset* stamps the real per-type shape at creation, per this batch's own instruction. Double-hung is explicitly excluded from this batch's per-edge treatment — see §2.9's double-hung note below.
  
-A separate `glazedAreaM2(leaf)` computes true glass area (pane size minus the four sash values), shown in an additive pane-table column, "Glazed area (m²)" — the original "Area (m²)" column (full outer pane area) is unchanged.
+A separate `glazedAreaM2(leaf)` computes true glass area (pane size minus the four sash values), shown in an additive pane-table column, labelled **"Visible glazed area (m²)"** (renamed from "Glazed area (m²)" in batch 28 — label only, `glazedAreaM2()`'s computation is unchanged) — the original "Area (m²)" column (full outer pane area) is unchanged.
  
 **A locked edge (batch 23) always has an effective sash value of `0` on the touching side, by construction of how the joint is created — see §2.10.**
  
@@ -88,6 +88,8 @@ Head/sill/jambL/jambR, independently editable, off by default. **Batch 26 built 
 ### 2.7 — Master dimension flip
  
 The entered overall width/height are the outer frame's own outside dimensions. The opening is derived: `openingW = overallW − jambL − jambR`, `openingH = overallH − head − sill`. Changing a frame member cascades a recursive minimum-pane-size validation (`validateTreeAgainstSize`) against every descendant, blocking the edit inline if anything would shrink below `MIN_PANE_MM`. This validation function is reused directly by the assembly-preset reopen mechanism (§2.9).
+
+**Batch 28 — height is shared between joined elevations.** Width (`overallW`) stays fully independent per elevation, confirmed and unchanged. Height (`overallH`) is now synced for as long as an angled join exists: creating the join (`addAngledJoin`) copies elevation 1's current height onto the newly created elevation 2; after that, editing the height field on **either** elevation while a join exists propagates the new value to the other elevation's stored `overallH` too — both fields stay independently editable, there is no primary/secondary side. `handleOverallInput`'s height path now validates the new height against **both** elevations' own trees (each against its own frame members, via a generalized `getMembers(ev)` that defaults to the active elevation) before committing either one; if either elevation's tree would fail (`MIN_PANE_MM` or `validateTreeAgainstSize`), the whole change is blocked and rolled back, even if the elevation being edited would itself have been fine. With no join present (single elevation), this is an unchanged no-op. The width path (`isWidth: true`) was not touched.
  
 ### 2.8 — Dimensioning
  
@@ -358,7 +360,9 @@ This session ended with a deliberate handoff to save context tokens. Everything 
  
 **2. Design the JSON export schema (§6.7 item 1).** The single biggest concrete blocker for the whole AS 1288 integration. Needs to cover: standard pane/type/productClass/sash-edge/glazed-area data; the `isSiliconeJoint`/`sash*Locked` tags and a derived unframed-edge-count field; and, once built, the Case 1 cross-elevation link and angle value. A real design conversation, not a quick batch.
  
-**3. ~~Build the real flat-vs-angled elevation trigger~~ — done in batch 26 (§2.1, §2.6, §7.4).** "Add angled join" replaced batch 25's temporary "+ Add elevation" placeholder and is now the only way to reach a second elevation, hard-capped at 2. Still open: the stored angle value and the cross-elevation pane link — neither was in batch 26's scope. **Check the in-code canonical batch log** before assigning any new batch number; 28 is next free.
+**3. ~~Build the real flat-vs-angled elevation trigger~~ — done in batch 26 (§2.1, §2.6, §7.4).** "Add angled join" replaced batch 25's temporary "+ Add elevation" placeholder and is now the only way to reach a second elevation, hard-capped at 2. Still open: the stored angle value and the cross-elevation pane link — neither was in batch 26's scope. **Check the in-code canonical batch log** before assigning any new batch number; 29 is next free.
+
+**3a. ~~Sync overall height between joined elevations~~ — done in batch 28 (§2.7).** Height now copies at join creation and stays synced both ways for as long as the join exists, validated against both elevations' own trees; width remains independent. "Glazed area (m²)" column relabelled "Visible glazed area (m²)" in the same batch (label only).
  
 **4. ~~Design the meeting-edge no-jamb mechanism~~ — done in batch 26 (§2.6, §7.4).** Each elevation now carries `meetingEdges`/`meetingLink` (`{head, sill, jambL, jambR}`); a meeting-tagged edge is forced to 0 and locked regardless of `hasFrame`. Only jambL/jambR have a UI path so far (via "Add angled join"); head/sill exist in the data shape for later.
  

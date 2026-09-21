@@ -130,7 +130,7 @@
 
 <h2>Assigned panes (feeds the compliance calc, one row per pane)</h2>
 <table>
-  <thead><tr><th>Pane</th><th>Class</th><th>Type</th><th>Width (mm)</th><th>Height (mm)</th><th>Area (m²)</th><th>Glazed area (m²)</th><th>Sash frame (mm)</th></tr></thead>
+  <thead><tr><th>Pane</th><th>Class</th><th>Type</th><th>Width (mm)</th><th>Height (mm)</th><th>Area (m²)</th><th>Visible glazed area (m²)</th><th>Sash frame (mm)</th></tr></thead>
   <tbody id="paneTable"></tbody>
   <tfoot><tr><td>Total</td><td></td><td></td><td></td><td id="totalPanes"></td><td id="totalArea"></td><td id="totalGlazedArea"></td><td></td></tr></tfoot>
 </table>
@@ -214,6 +214,13 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       emptying a joint-locked pane, silently defeating batch 24's restriction on that edge once
 //       cleared. Fixed: hasLockedEdge() widened to also match kind:'empty' nodes carrying lock
 //       flags; Clear button now carries those flags forward onto the resulting empty node.
+// 28:   synced overall height between joined elevations — addAngledJoin now copies elevation 1's
+//       live height onto elevation 2 at creation (width stays independent, unchanged); while a
+//       join exists, handleOverallInput's height ('frameH') path now validates AND commits the
+//       new height on both elevations' own trees (getMembers() generalized to take an elevation
+//       arg), blocking the whole change if either side fails. Width path untouched. Also: "Glazed
+//       area" column header renamed to "Visible glazed area" (label only, glazedAreaM2() itself
+//       unchanged).
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -594,8 +601,11 @@ function getOverallH() { return Number(document.getElementById('frameH').value) 
 // Batch 26: a meeting-tagged edge has no jamb regardless of hasFrame — the outer-frame toggle
 // and the meeting tag are independent (§7.4/§5), so this forces that member to 0 even when
 // hasFrame is true, on top of (not instead of) the existing hasFrame:false all-zero behaviour.
-function getMembers() {
-  const ev = activeElevation();
+// Batch 28: parameterized to accept an arbitrary elevation (defaulting to the active one, so
+// every pre-existing call site is unchanged) — needed so handleOverallInput can validate the
+// OTHER (inactive) elevation's own tree using ITS OWN frame members, not the active elevation's.
+function getMembers(ev) {
+  ev = ev || activeElevation();
   const base = ev.hasFrame ? ev.frameMembers : { head: 0, sill: 0, jambL: 0, jambR: 0 };
   return {
     head: ev.meetingEdges.head ? 0 : base.head,
@@ -2875,6 +2885,9 @@ function addAngledJoin(jamb) {
   const otherJamb = jamb === 'jambL' ? 'jambR' : 'jambL';
   ev.meetingLink[jamb] = { edge: otherJamb };
   const second = newElevation('Elevation 2');
+  // Batch 28: height is shared for as long as the join exists (see handleOverallInput's sync
+  // logic below) — width is deliberately NOT copied, it stays independent per elevation.
+  second.overallH = ev.overallH;
   second.meetingEdges[otherJamb] = 'meeting';
   second.meetingLink[otherJamb] = { edge: jamb };
   elevations.push(second);
@@ -3871,8 +3884,36 @@ function handleOverallInput(id, errId, isWidth) {
     render();
     return;
   }
+  // Batch 28: while an angled join exists, height is shared between both elevations — a height
+  // change on either one must also be legal for the OTHER elevation's own tree (its own head/sill,
+  // which can differ from this elevation's), checked BEFORE committing either side. Width is
+  // deliberately excluded — this whole block is skipped for the isWidth:true path.
+  let other = null, otherM = null;
+  if (!isWidth && elevations.length === 2) {
+    other = elevations[activeElevationIndex === 0 ? 1 : 0];
+    otherM = getMembers(other);
+    const otherOpeningW = getOpeningW(other.overallW, otherM);
+    const otherOpeningH = getOpeningH(newVal, otherM);
+    if (otherOpeningW < MIN_PANE_MM || otherOpeningH < MIN_PANE_MM) {
+      errEl.textContent = other.name + ': opening would be too small at this overall height.';
+      input.value = ev.lastValidOverallH;
+      render();
+      return;
+    }
+    const otherErr = validateTreeAgainstSize(other.root, otherOpeningW, otherOpeningH);
+    if (otherErr) {
+      errEl.textContent = other.name + ': ' + otherErr;
+      input.value = ev.lastValidOverallH;
+      render();
+      return;
+    }
+  }
   errEl.textContent = '';
   if (isWidth) ev.lastValidOverallW = newVal; else ev.lastValidOverallH = newVal;
+  if (other) {
+    other.overallH = newVal;
+    other.lastValidOverallH = newVal;
+  }
   render();
 }
 // Item 10: overall width/height commit on 'change' (blur/Enter), not on every keystroke —
