@@ -231,6 +231,12 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       bottom-left-from-main-origin, Y up), unframedEdgeCount (sash*Locked + meeting-jamb-touch,
 //       both sources), and frameLengthMM (sash perimeter + real mullions/transoms + outer frame,
 //       explicitly excluding sashSplit overlap joins to avoid double-counting).
+// 30:   export-only fix — unframedEdgeCount now also counts a `fixed`-type leaf's outer-touching
+//       edge when its elevation has hasFrame:false (Case 3, on top of batch 29's Case 1/Case 2),
+//       since that edge genuinely has neither a jamb nor a sash. Guarded per-side by
+//       !ev.meetingEdges[key] so a meeting-tagged edge already counted by Case 1 is never double-
+//       counted. Only fires for type:'fixed' — every other type has its own real sash regardless
+//       of hasFrame. No UI change, no new stored field — purely derived at export time.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -4094,6 +4100,18 @@ function buildExportElevation(ev, index) {
     if (ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
     if (ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
     if (ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+    // Batch 30 — Case 3: a `fixed` (no-sash) leaf touching the outer boundary of an elevation
+    // with hasFrame:false has nothing holding that edge — no jamb, no sash, and not already
+    // counted by Case 1/2. Guarded per-side by `!ev.meetingEdges[key]` so a meeting-tagged edge
+    // (already counted above) is never double-counted just because hasFrame also happens to be
+    // false on that elevation. Only fires for `fixed` — every other type has its own real sash
+    // regardless of hasFrame, already reflected in sashEdgesMM untouched by this batch.
+    if (isFixed && !ev.hasFrame) {
+      if (!ev.meetingEdges.head && Math.abs(l.y) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+      if (!ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+      if (!ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+      if (!ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
+    }
 
     // Part 5 component 1 — every non-fixed pane's own sash perimeter.
     if (!isFixed) frameLengthMM += 2 * (l.w + l.h);
