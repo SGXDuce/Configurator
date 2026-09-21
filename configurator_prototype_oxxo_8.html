@@ -248,6 +248,16 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       step. Icon picker (renderDoorPanelStylePicker/renderDoorPanelStyleIcon) reuses the
 //       assembly-preset picker's visual language. D22's interchangeable zones get a follow-up
 //       material select. Full ~30-style catalog explicitly NOT built — proof of concept only.
+// 32:   door panel catalog data entry — D2, D3, D4, D5L, D5, D7, D8, D9, D10, D11, D12, D13 added
+//       to DOOR_PANEL_CATALOG (all fixed-glass, no interchangeable zones). No mechanism changes —
+//       computeDoorPanelLayout/picker untouched, per door_panel_catalog_reference.md. New helpers
+//       makeSingleLiteRow(shareRef)/makeThreeColRow(shareRef) factor out the repeated
+//       stile/zone/stile and stile/zone/bar/zone/bar/zone/stile row shapes (D6's existing
+//       makeD6Row() reused as-is for every 2-column grid door). D2 uses 380mm content width per
+//       the reference doc's own flagged correction (not the source drawing's stray 398.9mm). D5's
+//       bottom rail (236mm) is derived, not stated directly in the source. D7/D13's main content
+//       row needed its own two 110mm stiles added on top of the reference doc's stated 380mm
+//       content split — caught by this batch's own column-sum verification before being trusted.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -693,6 +703,227 @@ const DOOR_PANEL_CATALOG = {
         ]
       }
     ]
+  },
+  // ===== Batch 32 — D2–D13 (all fixed-glass, per door_panel_catalog_reference.md's "D1–D13"
+  // table). Data entry only — no new mechanism, reuses computeDoorPanelLayout/the picker exactly
+  // as batch 31 built them. Every entry's rowBands heights and each content row's columns widths
+  // were hand-summed against the door's own reference W/H before being trusted — see the batch
+  // report for the individual sum-check results.
+  //
+  // Family B — simple stacked single-column lites, one stile/content-zone/stile row per lite,
+  // full-width rails/bars between. D2 — top lite 1090, mid rail 140, bottom lite 570, bottom
+  // rail 190 (110+1090+140+570+190 = 2100 exact). Content width uses 380mm (matching every
+  // sibling door), NOT the source drawing's own stray 398.9mm figure — flagged per the reference
+  // doc's own note; see this batch's report for the same flag.
+  D2: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 }, // top rail
+      { kind: 'content', shareRef: 1090, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 140 }, // mid rail
+      { kind: 'content', shareRef: 570, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 190 } // bottom rail
+    ]
+  },
+  // D3 — 3 lites of 584.7, 2×23mm horizontal bars, single column (same vertical stack as D6,
+  // no vertical split). 110+3*584.7+2*23+189.9(derived) = 2100.
+  D3: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 584.7, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 584.7, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 584.7, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 189.9 } // derived: 2100-(110+3*584.7+2*23)
+    ]
+  },
+  // D4 — reference height 2107.2mm (NOT 2100, per the reference doc). 4 lites of 432.8, 3×23mm
+  // bars. 110+4*432.8+3*23+197(derived) = 2107.2.
+  D4: {
+    referenceW: 600, referenceH: 2107.2,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 432.8, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 197 } // derived: 2107.2-(110+4*432.8+3*23)
+    ]
+  },
+  // D5L — 5 lites of 341.6, 4×23mm bars. 110+5*341.6+4*23+190(derived) = 2100.
+  D5L: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 341.6, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeSingleLiteRow(380) },
+      { kind: 'fixed', heightMM: 190 } // derived: 2100-(110+5*341.6+4*23)
+    ]
+  },
+  // D5 — explicitly flagged "Mixed" in the reference doc, NOT a uniform grid: top and bottom
+  // lites are 2-column (178.5 each side of a 23mm bar, summing to 380 exact), centre lite is a
+  // single full-width column. Bottom rail (236mm) is DERIVED — not stated directly in the source,
+  // computed as 2100-(110+277+1200+277) — flagged in this batch's report, same as D2's assumption.
+  D5: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 }, // top rail
+      { kind: 'content', shareRef: 277, columns: makeD6Row() }, // top lite, 2-column split
+      { kind: 'content', shareRef: 1200, columns: makeSingleLiteRow(380) }, // centre lite, full width
+      { kind: 'content', shareRef: 277, columns: makeD6Row() }, // bottom lite, 2-column split
+      { kind: 'fixed', heightMM: 236 } // derived: 2100-(110+277+1200+277)
+    ]
+  },
+  // D7 — "Mixed", fully resolved per the reference doc: compound top/bottom rail structure,
+  // vertical 110+100+23+1554+23+100+190 = 2100 exact. Reference doc states the main lite's own
+  // horizontal split as "100 | 23 bar | 257 = 380 exact" — 380mm being the content area width
+  // (600 - 110 - 110 stiles, same convention as every other door), so the main content row still
+  // needs its own two 110mm stiles either side of that 380mm split, same as every sibling door;
+  // full row check: 110+100+23+257+110 = 600.
+  D7: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 }, // top rail
+      { kind: 'fixed', heightMM: 100 }, // secondary top rail
+      { kind: 'fixed', heightMM: 23 }, // horizontal bar
+      {
+        kind: 'content', shareRef: 1554,
+        columns: [
+          { kind: 'fixed', widthMM: 110 }, // left stile
+          { kind: 'content', shareRef: 100, zone: { type: 'fixed-glass' } },
+          { kind: 'fixed', widthMM: 23 }, // vertical bar
+          { kind: 'content', shareRef: 257, zone: { type: 'fixed-glass' } },
+          { kind: 'fixed', widthMM: 110 } // right stile
+        ]
+      },
+      { kind: 'fixed', heightMM: 23 }, // horizontal bar
+      { kind: 'fixed', heightMM: 100 }, // secondary bottom rail
+      { kind: 'fixed', heightMM: 190 } // bottom rail
+    ]
+  },
+  // D8 — C, 4×2 grid: rows 432.8, columns 178.5, 23mm bars both axes. 110+4*432.8+3*23+189.8
+  // (derived) = 2100; columns 178.5*2+23 = 380 exact.
+  D8: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 432.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 189.8 } // derived: 2100-(110+4*432.8+3*23)
+    ]
+  },
+  // D9 — C, 5×2 grid: rows 341.6, columns 178.5.
+  D9: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 341.6, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 190 } // derived: 2100-(110+5*341.6+4*23)
+    ]
+  },
+  // D10 — C, 6×2 grid: rows 280.8, columns 178.5.
+  D10: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 280.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 280.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 280.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 280.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 280.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 280.8, columns: makeD6Row() },
+      { kind: 'fixed', heightMM: 190.2 } // derived: 2100-(110+6*280.8+5*23)
+    ]
+  },
+  // D11 — C, 4×3 grid: rows 432.8, columns 111.3, 23mm bars both axes (3 columns -> 2 vertical
+  // bars per row). Columns: 111.3*3+23*2 = 379.9 (matches the ~380mm convention within rounding).
+  D11: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 432.8, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 432.8, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 189.8 } // derived: 2100-(110+4*432.8+3*23)
+    ]
+  },
+  // D12 — C, 5×3 grid: rows 341.6, columns 111.3.
+  D12: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'content', shareRef: 341.6, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'content', shareRef: 341.6, columns: makeThreeColRow(111.3) },
+      { kind: 'fixed', heightMM: 190 } // derived: 2100-(110+5*341.6+4*23)
+    ]
+  },
+  // D13 — "Mixed", fully resolved, identical vertical stack to D7. Reference doc's own
+  // "100 | 23 bar | 134 | 23 bar | 100 = 380 exact" is the 380mm content-area split, same
+  // convention as D7 above — the main content row also needs its own two 110mm stiles either
+  // side; full row check: 110+100+23+134+23+100+110 = 600.
+  D13: {
+    referenceW: 600, referenceH: 2100,
+    rowBands: [
+      { kind: 'fixed', heightMM: 110 },
+      { kind: 'fixed', heightMM: 100 },
+      { kind: 'fixed', heightMM: 23 },
+      {
+        kind: 'content', shareRef: 1554,
+        columns: [
+          { kind: 'fixed', widthMM: 110 }, // left stile
+          { kind: 'content', shareRef: 100, zone: { type: 'fixed-glass' } },
+          { kind: 'fixed', widthMM: 23 },
+          { kind: 'content', shareRef: 134, zone: { type: 'fixed-glass' } },
+          { kind: 'fixed', widthMM: 23 },
+          { kind: 'content', shareRef: 100, zone: { type: 'fixed-glass' } },
+          { kind: 'fixed', widthMM: 110 } // right stile
+        ]
+      },
+      { kind: 'fixed', heightMM: 23 },
+      { kind: 'fixed', heightMM: 100 },
+      { kind: 'fixed', heightMM: 190 }
+    ]
   }
 };
 // D6's three content rows share an identical column shape (stile / fixed-glass zone / stile,
@@ -705,6 +936,31 @@ function makeD6Row() {
     { kind: 'fixed', widthMM: 23 }, // vertical glazing bar
     { kind: 'content', shareRef: 178.5, zone: { type: 'fixed-glass' } },
     { kind: 'fixed', widthMM: 110 } // right stile
+  ];
+}
+// Batch 32 — a single full-width fixed-glass column between the two stiles (family A/B's own
+// per-lite row shape), parameterized on content share since D2/D3/D4/D5L/D5's centre lite/D7's
+// asymmetric halves/D13's own row all reuse this exact stile/content/stile shape at different
+// widths — factored out rather than repeating the same 3-entry array literal at each door.
+function makeSingleLiteRow(contentShareRef) {
+  return [
+    { kind: 'fixed', widthMM: 110 },
+    { kind: 'content', shareRef: contentShareRef, zone: { type: 'fixed-glass' } },
+    { kind: 'fixed', widthMM: 110 }
+  ];
+}
+// Batch 32 — D11/D12's 3-column grid row: stile / zone / 23mm bar / zone / 23mm bar / zone /
+// stile, each zone the same content share (colShareRef) — same generalization purpose as
+// makeSingleLiteRow above, for the 3-column family-C doors.
+function makeThreeColRow(colShareRef) {
+  return [
+    { kind: 'fixed', widthMM: 110 },
+    { kind: 'content', shareRef: colShareRef, zone: { type: 'fixed-glass' } },
+    { kind: 'fixed', widthMM: 23 },
+    { kind: 'content', shareRef: colShareRef, zone: { type: 'fixed-glass' } },
+    { kind: 'fixed', widthMM: 23 },
+    { kind: 'content', shareRef: colShareRef, zone: { type: 'fixed-glass' } },
+    { kind: 'fixed', widthMM: 110 }
   ];
 }
 
