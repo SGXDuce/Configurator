@@ -388,6 +388,20 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       showExportBlockedError()/clearExportBlockedError() pair. No change to rawState,
 //       angledJoinAngleDeg/angledJoinType, or schemaVersion (still v2 — a correctness fix within
 //       the existing shape, linkedPaneId's meaning is unchanged, only its accuracy).
+// 41:   fix — cross-elevation edge-matching tolerance corrected from 0.01mm to 1mm. Batch 40's
+//       matchesEdge() reused EDGE_TOUCH_EPS_MM (0.01mm), built for a different, more forgiving
+//       question ("does this pane touch the jamb at all," absorbing only floating-point noise)
+//       than "do two independently-computed mm values from two different elevations' own trees
+//       represent the same physical edge" — unrealistically tight for physical timber joinery,
+//       risking false-blocking a genuinely valid export over ordinary float drift. Fixed with a
+//       new, separate constant, PANE_EDGE_MATCH_TOL_MM = 1, used ONLY in matchesEdge()'s two
+//       comparisons — EDGE_TOUCH_EPS_MM itself and every other call site of it (jamb-touching
+//       detection at leavesTouchingJamb/the toolbar's touchesMeetingJamb check, unframedEdgeCount's
+//       four Case-1 checks and four Case-3 checks, and computeCrossElevationLinks' own touching-
+//       filter) are grep-confirmed unchanged. No other logic change to computeCrossElevationLinks —
+//       tolerance-value fix only. Re-traced batch 40's three test cases against the new tolerance:
+//       same pass/block outcomes (1mm doesn't change round-number cases like 1000/1400mm, only how
+//       close "close enough" is).
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5361,26 +5375,36 @@ function resolveOverallDims(ev, index) {
 // 1400mm on the other) — index-pairing would link two panes that don't physically meet. Fixed to
 // match on ACTUAL EDGE POSITION instead: each touching pane's start/end along the jamb (its own
 // internal y and y+h — the same coordinate collectExportGeometry/the touching-filter below already
-// use, not a second coordinate system) must both agree, within EDGE_TOUCH_EPS_MM, with a pane on
-// the other side, before the two are linked. This subsumes the old count-mismatch check — a count
+// use, not a second coordinate system) must both agree, within a tolerance, with a pane on the
+// other side, before the two are linked. This subsumes the old count-mismatch check — a count
 // mismatch is just one way for a pane to end up with no matching partner, so there's now a single
 // per-pane match check rather than two separate checks (a global count check, then blind index
 // pairing).
 //
-// EDGE_TOUCH_EPS_MM (0.01mm) is reused here, not a new tolerance — the batch-40 prompt itself
-// floated "1mm" as an example tolerance, but that's 100x looser than this codebase's own existing
-// touch-tolerance convention (used for jamb-touching, unframedEdgeCount, D14-D20's zone geometry,
-// etc. — all 0.01mm). Flagging the mismatch explicitly rather than silently picking either number:
-// reusing EDGE_TOUCH_EPS_MM keeps one tolerance concept everywhere edge-touching is tested in this
-// file, per the prompt's own "reuse the existing tolerance constant" instruction; a real-world
-// site-measurement tolerance (if one is ever wanted) is a different, explicitly out-of-scope
-// concept from this floating-point-drift epsilon.
+// [Batch 41 correction: batch 40 originally reused EDGE_TOUCH_EPS_MM (0.01mm) for this tolerance —
+// found to be wrong, since that constant was built for a different, more forgiving question ("does
+// this pane touch the jamb at all", absorbing only floating-point noise), not "do two independently
+// -computed mm values from two different trees represent the same physical edge." 0.01mm is
+// unrealistically tight for physical timber joinery and risked false-blocking a valid export over
+// ordinary float drift. Fixed in batch 41 — see the dedicated PANE_EDGE_MATCH_TOL_MM constant
+// (1mm) declared just below, used only in matchesEdge(); EDGE_TOUCH_EPS_MM itself and every other
+// call site of it are untouched.]
 //
 // Returns { ok: true, linksByElevation: [Map(paneId -> linkedPaneId), Map(...)] } on success, or
 // { ok: false, error: <human-readable string> } if any touching pane on either side has no
 // matching partner — the caller (buildExportData) must check `ok` and refuse to produce ANY
 // export at all if false; this function itself never throws or partially returns links for an
 // unmatched pane.
+// Batch 41 — deliberately a SEPARATE constant from EDGE_TOUCH_EPS_MM (0.01mm), not a change to it.
+// EDGE_TOUCH_EPS_MM was built for a different, more forgiving question — "does this pane touch
+// the jamb at all" — computed from clean subtraction/addition through the tree, where 0.01mm only
+// exists to absorb floating-point noise. matchesEdge() below asks a different question — "do these
+// two independently-computed mm values, from two different elevations' own trees, represent the
+// SAME physical edge" — where 0.01mm is unrealistically tight for physical timber joinery and
+// risks false-blocking a genuinely valid export over ordinary floating-point drift. Used ONLY in
+// matchesEdge()'s two comparisons below — every other EDGE_TOUCH_EPS_MM call site (jamb-touching
+// detection, unframedEdgeCount) is untouched.
+const PANE_EDGE_MATCH_TOL_MM = 1;
 function findMeetingJamb(ev) {
   return MEETING_EDGE_UI_JAMBS.find(j => ev.meetingEdges[j] === 'meeting') || null;
 }
@@ -5403,7 +5427,7 @@ function computeCrossElevationLinks() {
     return { ev, jamb, touching };
   });
   const [sideA, sideB] = sides;
-  const matchesEdge = (a, b) => Math.abs(a.edgeStart - b.edgeStart) < EDGE_TOUCH_EPS_MM && Math.abs(a.edgeEnd - b.edgeEnd) < EDGE_TOUCH_EPS_MM;
+  const matchesEdge = (a, b) => Math.abs(a.edgeStart - b.edgeStart) < PANE_EDGE_MATCH_TOL_MM && Math.abs(a.edgeEnd - b.edgeEnd) < PANE_EDGE_MATCH_TOL_MM;
 
   // Find the first pane on `other` whose start+end both match `leaf`, or null. Also returns the
   // single closest candidate (by start-position distance) for the error message when nothing
