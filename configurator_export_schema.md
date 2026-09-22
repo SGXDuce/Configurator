@@ -110,10 +110,11 @@ A second, separate top-level field, sitting alongside `system`, not inside it. W
 
 **`rawState` is explicitly opaque to any consumer.** The AS 1288 tool (or any other reader) stores and returns it unread — it never parses or derives anything from `rawState`'s own contents. This is why `schemaVersion` does not cover it: `schemaVersion` versions `system`'s own derived shape only. `rawState`'s own internal shape can change freely between configurator versions without being a breaking change for any consumer, precisely because no consumer is expected to read it — it only round-trips through whatever external system stores it, until the configurator itself (via `restoreFromRawState()`) reads it back.
 
-Produced by `serializeRawState()`, consumed by `restoreFromRawState()` — both in `configurator_prototype_oxxo_8.html`. Shape, as of batch 37:
+Produced by `serializeRawState()`, consumed by `restoreFromRawState()` — both in `configurator_prototype_oxxo_8.html`. Shape, as of batch 38:
 
 ```json
 {
+  "rawStateSchemaVersion": 1,
   "elevations": [ /* the full live elevation objects — tree, overallW/overallH, hasFrame,
                      frameMembers, meetingEdges, meetingLink, selected, pendingSplit, etc. —
                      not a derived form, the actual internal representation */ ],
@@ -123,11 +124,35 @@ Produced by `serializeRawState()`, consumed by `restoreFromRawState()` — both 
 }
 ```
 
-No UI calls `restoreFromRawState()` yet (batch 37 is prerequisite-only) — a future embed-mode batch will wire it to a "load" postMessage handler.
+**`rawStateSchemaVersion` (added batch 38).** Batch 37 deliberately left `rawState` unversioned, since it's opaque to the AS 1288 tool and nothing external was expected to read it. Batch 38's embed-mode "load" handshake changed that: the CONFIGURATOR ITSELF now needs to recognize its own state shape before trusting a `rawState` blob handed back to it on load — so a minimal version marker was added specifically to give that check something real to validate against, rather than skipping it. This is a small, deliberate scope addition beyond what batch 37 shipped, flagged here rather than folded in silently. It has no relationship to `schemaVersion` (which still only describes `system`'s own derived shape) — bump `rawStateSchemaVersion` only when `restoreFromRawState()`'s expectations of what `serializeRawState()` produces change in an incompatible way.
+
+`restoreFromRawState()` is now wired into the embed-mode "load" message (see "postMessage embed protocol" below) — no longer prerequisite-only as of batch 38.
+
+## postMessage embed protocol (batch 38)
+
+When this configurator is opened inside an `<iframe>` (`window.parent !== window`), it runs a same-origin postMessage handshake with the parent page instead of behaving as a standalone tool. **Standalone mode (opened directly, not embedded) is completely unaffected** — no listener is ever registered, and "Export JSON" keeps downloading a file exactly as before.
+
+**Security — same-origin only, no hardcoded URL:**
+- Every message this configurator SENDS targets `window.parent` with `window.location.origin` as the explicit target origin — never `'*'`.
+- Every message this configurator RECEIVES is checked against BOTH `event.origin === window.location.origin` AND `event.source === window.parent` before anything in it is read. Failing either check is a silent drop — no error, no console output, no partial processing.
+
+**Handshake, in order:**
+
+1. **`ready`** — sent by the configurator once its own initial render has genuinely finished (not before): `{ "type": "ready", "schemaVersion": 1 }`. `schemaVersion` here is the export's own `system` schema version (currently 1) — this tells the parent which derived-pane-list shape a subsequent `done` will use.
+2. **`load`** — sent by the parent in response, exactly once: `{ "type": "load", "state": null | <a previously-saved rawState blob> }`.
+   - `state: null` — start a fresh, single-elevation session (the existing default). `restoreFromRawState()` is never called.
+   - `state: { ...a real rawState object... }` — its own `rawStateSchemaVersion` is checked first. If it doesn't match the configurator's own `RAW_STATE_SCHEMA_VERSION`, the configurator shows a persistent, visible in-page error (not a console log, not an `alert()`) and stops — `restoreFromRawState()` is never called, no partial or best-effort load is attempted. If it matches, `restoreFromRawState(state)` runs and the session is fully reconstructed.
+3. The user edits normally — nothing about the editing UI differs in embed mode.
+4. **`done`** — sent by the configurator when the user finishes: `{ "type": "done", "export": <the full buildExportData() output, i.e. { schemaVersion, system, rawState }> }`. This is the ONLY way `done` ever fires. It's driven by the same "Export JSON" button, relabelled "Done" in embed mode — one button, one conditional action, rather than a second embed-only control. In embed mode this button sends the postMessage instead of downloading a file.
+
+**No cancel/close from the configurator.** Per the agreed protocol, cancel/close belongs entirely to the parent page's own modal chrome (its own close button). The configurator renders no close/cancel control in any mode and never sends a cancel-type message — only `ready` and `done` are ever constructed.
+
+**No row/system ID handling.** The parent tracks which schedule row is open; the configurator neither accepts, stores, nor echoes back any kind of identifier.
 
 ## What's deliberately NOT in this version
 
 - Cross-elevation pane-to-pane link (§7.4) — concrete shape still undesigned, separate from this batch. Once built, `system` will need a schema bump (v2) to represent it in the derived pane list.
 - FFL and room type — confirmed to live entirely on the AS 1288 tool's own schedule-row form, never in this export (§6.5, §6.7).
 - Any AS 1288-specific derivation (sidelight test, glazing-method bucketing) — runs on the receiving end, not here.
-- The angled join's stored angle (`angledJoinAngleDeg`, batch 35) and construction type (`angledJoinType`, batch 36) are both now built in-app, but deliberately still NOT part of `system`'s own derived shape — they live only in `rawState` (opaque, batch 37) for now. Exposing them as real, documented `system`-level fields is exactly the v2 work the cross-elevation-pane-link bump above is already being held for; they won't be released into `system` piecemeal ahead of it.
+- The angled join's stored angle (`angledJoinAngleDeg`, batch 35) and construction type (`angledJoinType`, batch 36) are both now built in-app, but deliberately still NOT part of `system`'s own derived shape — they live only in `rawState` (opaque) for now. Exposing them as real, documented `system`-level fields is exactly the v2 work the cross-elevation-pane-link bump above is already being held for; they won't be released into `system` piecemeal ahead of it.
+- Any row/system identifier — the parent owns this entirely; the postMessage protocol (batch 38) neither accepts nor returns one.

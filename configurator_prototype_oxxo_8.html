@@ -84,6 +84,12 @@
 <h1>Configurator prototype — free layout</h1>
 <p class="subtitle">Blank canvas, no frame by default. Divide any region with a mullion, transom, or a sash (with its own overlap onto its neighbour), and add an outer frame only if the job has one. Nothing here is wired to the AS 1288 engine or Flask app yet.</p>
 
+<!-- Batch 38 — embed mode: shown only when a `load` message arrives with a rawState schemaVersion
+     this configurator doesn't recognize. Deliberately visible in-page (not a console log, not an
+     alert() that could be missed) and persistent — restoreFromRawState is never called when this
+     shows. Hidden the rest of the time, in both standalone and embed mode. -->
+<div id="embedLoadError" style="display:none; background:#3a1a1a; border:1px solid var(--danger); color:var(--danger); padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:13px;"></div>
+
 <!-- Legend temporarily removed (batch 3, item 3) — pending a rebuild once the type system stabilises. -->
 
 <!-- Batch 25/26: elevation tab bar. With a single elevation this shows only the minimal "Add
@@ -320,6 +326,26 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       an unframed silicone joint (locked edges), and a nested-sash hinged door — every field
 //       matched exactly after serialize→restore; a restore into a smaller state was confirmed to
 //       fully replace (not merge with) a larger prior session.
+// 38:   embed mode — postMessage handshake, load, and done. isEmbedded = window.parent !== window,
+//       checked once at module load; standalone behaviour is completely untouched (no listener
+//       registered, "Export JSON" keeps downloading a file — diffed against pre-batch code, only
+//       change is the download logic moving verbatim into a named downloadExportFile() function).
+//       Same-origin only: every send is postToParent() -> window.parent.postMessage(msg,
+//       window.location.origin), never '*'; every receive checks event.origin ===
+//       window.location.origin AND event.source === window.parent before reading event.data at
+//       all — either check failing means silent drop, no error, no console output. Handshake:
+//       'ready' (with schemaVersion:1) sent only after the page's own initial render() completes;
+//       a 'load' message with state:null starts a fresh default session (restoreFromRawState never
+//       called); a real state object is checked against a NEW RAW_STATE_SCHEMA_VERSION constant
+//       (small, deliberate scope addition on top of batch 37 — rawState's own output now carries
+//       rawStateSchemaVersion, specifically so this check has something real to validate, per the
+//       batch prompt's own instruction) before restoreFromRawState() is ever called; a mismatch
+//       shows a persistent in-page error banner (#embedLoadError, not console/alert) and stops —
+//       no partial load. 'done' is the ONLY way out, fired by the same "Export JSON" button
+//       (relabelled "Done" when embedded) sending {type:'done', export: buildExportData()} instead
+//       of downloading a file — one button, conditional action, not two separate controls. No
+//       cancel/close control exists in this file in any mode (nothing had to be removed) and no
+//       cancel-type message is ever constructed — grep-confirmed only 'ready'/'done' exist.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5395,6 +5421,14 @@ function buildExportElevation(ev, index) {
 // newElevation's own comment above elevations/activeElevationIndex), so a naive elevations.map
 // without this would silently export a wrong width/height for whichever elevation happens to be
 // active at export time.
+// Batch 38 — a minimal version marker on rawState's own shape, added specifically so the embed-
+// mode "load" handshake has something real to validate before calling restoreFromRawState() —
+// batch 37 deliberately left rawState unversioned (opaque to the AS1288 tool, which never reads
+// it), but the CONFIGURATOR ITSELF still needs to recognize its own shape before trusting a
+// state blob handed back to it. Bump this whenever restoreFromRawState's expectations of what
+// serializeRawState produces change in an incompatible way. Small, deliberate scope addition on
+// top of what batch 37 shipped — flagged here and in the batch report, not silently folded in.
+const RAW_STATE_SCHEMA_VERSION = 1;
 function serializeRawState() {
   const elevationsSnapshot = elevations.map((ev, i) => {
     const { overallW, overallH } = resolveOverallDims(ev, i);
@@ -5408,6 +5442,7 @@ function serializeRawState() {
     return clone;
   });
   return {
+    rawStateSchemaVersion: RAW_STATE_SCHEMA_VERSION,
     elevations: elevationsSnapshot,
     activeElevationIndex,
     angledJoinAngleDeg,
@@ -5469,7 +5504,7 @@ function buildExportData() {
 // Filename: elevation count + today's date (yyyy-mm-dd), e.g. "configurator-export-2elev-2026-09-21.json".
 // Not pinned down by either the batch prompt or the schema doc — flagged as an assumption, not
 // silently invented, per the batch prompt's own instruction.
-document.getElementById('exportJsonBtn').addEventListener('click', () => {
+function downloadExportFile() {
   const data = buildExportData();
   const json = JSON.stringify(data, null, 2);
   const today = new Date().toISOString().slice(0, 10);
@@ -5483,9 +5518,88 @@ document.getElementById('exportJsonBtn').addEventListener('click', () => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ===== Batch 38 — embed mode: postMessage handshake with a parent page (the AS1288 tool). =====
+//
+// Detection: window.parent !== window means this page is inside an iframe. Standalone (the
+// normal case, opened directly) never enters any of this — no listener registered, no behaviour
+// change anywhere, "Export JSON" keeps downloading a file exactly as it always has. Checked once,
+// at module load, into a const — embed-ness can't meaningfully change mid-session (nothing
+// re-parents an iframe), so there's no need to re-check it anywhere else.
+const isEmbedded = window.parent !== window;
+
+// Security: same-origin only, no hardcoded URL anywhere. Every send targets window.parent with
+// window.location.origin as the explicit target origin (never '*'); every receive checks BOTH
+// event.origin === window.location.origin AND event.source === window.parent before touching the
+// message at all — failing either check means silent drop, no error, no console warning, per the
+// batch prompt's own instruction. A message from a different origin, or one whose source isn't
+// literally the parent frame (e.g. a nested iframe of this page, or some other frame entirely),
+// is treated as not having happened.
+function postToParent(msg) {
+  window.parent.postMessage(msg, window.location.origin);
+}
+
+// Batch 38 — in-page, persistent, visible error for a rawState schemaVersion this configurator
+// doesn't recognize (see the 'load' handler below). Deliberately NOT a console.log or alert() —
+// per the batch prompt, this must be impossible to miss. Shown in place; nothing else about the
+// page is blocked (the configurator still opens fresh/empty), but restoreFromRawState is never
+// called in this case — no partial/best-effort load is attempted.
+function showEmbedLoadError(message) {
+  const banner = document.getElementById('embedLoadError');
+  banner.textContent = message;
+  banner.style.display = 'block';
+}
+
+if (isEmbedded) {
+  // No close/cancel control of any kind is rendered when embedded — per the agreed protocol,
+  // cancel/close belongs entirely to the parent page's own modal chrome. This configurator only
+  // ever sends 'ready' and 'done'; grep confirms no other message type is constructed anywhere in
+  // this file. (Nothing currently renders a close/cancel control in ANY mode — there's no such
+  // button to hide — so this is a standing invariant to preserve, not code that had to remove one.)
+  window.addEventListener('message', (event) => {
+    if (event.origin !== window.location.origin || event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.type !== 'load') return; // only 'load' is ever expected from the parent
+    if (msg.state == null) {
+      // Fresh single-elevation session — existing default state, already correct from module
+      // load; restoreFromRawState is deliberately never called for this branch.
+      return;
+    }
+    const receivedVersion = msg.state.rawStateSchemaVersion;
+    if (receivedVersion !== RAW_STATE_SCHEMA_VERSION) {
+      showEmbedLoadError(
+        'This saved system was created with a newer or incompatible version of the configurator ' +
+        '(schema version ' + JSON.stringify(receivedVersion) + ', expected ' + RAW_STATE_SCHEMA_VERSION + '). ' +
+        'It has not been loaded — no changes have been made. Please contact support.'
+      );
+      return; // do NOT call restoreFromRawState — no partial/best-effort load
+    }
+    restoreFromRawState(msg.state);
+  });
+}
+
+document.getElementById('exportJsonBtn').addEventListener('click', () => {
+  if (isEmbedded) {
+    // The only way 'done' ever fires — driven by this same button, relabelled for embed mode
+    // (see the label-swap right after the initial render() call below), rather than adding a
+    // second, separate embed-only button. Sends the postMessage instead of downloading a file;
+    // standalone's file-download path (downloadExportFile) is completely untouched.
+    postToParent({ type: 'done', export: buildExportData() });
+    return;
+  }
+  downloadExportFile();
 });
 
 render();
+
+if (isEmbedded) {
+  document.getElementById('exportJsonBtn').textContent = 'Done';
+  // Handshake step 1: sent only after the page's own initial render() above has completed, i.e.
+  // the embedded configurator has genuinely finished initializing — not before. Step 2 (waiting
+  // for 'load') is the message listener registered above, already active by the time this sends.
+  postToParent({ type: 'ready', schemaVersion: 1 });
+}
 </script>
 </body>
 </html>
