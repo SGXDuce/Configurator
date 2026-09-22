@@ -84,11 +84,12 @@
 <h1>Configurator prototype — free layout</h1>
 <p class="subtitle">Blank canvas, no frame by default. Divide any region with a mullion, transom, or a sash (with its own overlap onto its neighbour), and add an outer frame only if the job has one. Nothing here is wired to the AS 1288 engine or Flask app yet.</p>
 
-<!-- Batch 38 — embed mode: shown only when a `load` message arrives with a rawState schemaVersion
-     this configurator doesn't recognize. Deliberately visible in-page (not a console log, not an
-     alert() that could be missed) and persistent — restoreFromRawState is never called when this
-     shows. Hidden the rest of the time, in both standalone and embed mode. -->
-<div id="embedLoadError" style="display:none; background:#3a1a1a; border:1px solid var(--danger); color:var(--danger); padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:13px;"></div>
+<!-- Batch 38/39 — a single generic banner for any blocking, "impossible to miss" in-page error:
+     batch 38's embed-mode rawState-schemaVersion mismatch on load, and batch 39's cross-elevation
+     pane-count mismatch that blocks export (in BOTH standalone and embed mode — not embed-only,
+     hence the generic id/name rather than an embed-specific one). Deliberately never a console.log
+     or alert(). Hidden the rest of the time. -->
+<div id="configuratorError" style="display:none; background:#3a1a1a; border:1px solid var(--danger); color:var(--danger); padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:13px;"></div>
 
 <!-- Legend temporarily removed (batch 3, item 3) — pending a rebuild once the type system stabilises. -->
 
@@ -340,12 +341,31 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       (small, deliberate scope addition on top of batch 37 — rawState's own output now carries
 //       rawStateSchemaVersion, specifically so this check has something real to validate, per the
 //       batch prompt's own instruction) before restoreFromRawState() is ever called; a mismatch
-//       shows a persistent in-page error banner (#embedLoadError, not console/alert) and stops —
-//       no partial load. 'done' is the ONLY way out, fired by the same "Export JSON" button
-//       (relabelled "Done" when embedded) sending {type:'done', export: buildExportData()} instead
-//       of downloading a file — one button, conditional action, not two separate controls. No
-//       cancel/close control exists in this file in any mode (nothing had to be removed) and no
-//       cancel-type message is ever constructed — grep-confirmed only 'ready'/'done' exist.
+//       shows a persistent in-page error banner (batch 39 renamed this element from
+//       #embedLoadError to the generic #configuratorError — see batch 39's own entry below, it's
+//       reused for a second, non-embed-only error case) and stops — no partial load. 'done' is the
+//       ONLY way out, fired by the same "Export JSON" button (relabelled "Done" when embedded)
+//       sending {type:'done', export: buildExportData()} instead of downloading a file — one
+//       button, conditional action, not two separate controls. No cancel/close control exists in
+//       this file in any mode (nothing had to be removed) and no cancel-type message is ever
+//       constructed — grep-confirmed only 'ready'/'done' exist.
+// 39:   export schema v2 — cross-elevation pane link, angle, and joint type in `system`. Bumped
+//       schemaVersion to 2 (the 'ready' handshake now sends schemaVersion:2 too, matching). system
+//       gains top-level angledJoinAngleDeg/angledJoinType (the live module-level values — null when
+//       no join exists) alongside elevationCount/totalFrameLengthMM. New computeCrossElevationLinks()
+//       computes the pane-to-pane link fresh at export time — NOT stored anywhere, no new tree
+//       field, no UI: for each elevation finds whichever meetingEdges entry is actually tagged
+//       'meeting' (checks each side independently, never assumes jambL/jambR), collects the leaves
+//       touching it via a fresh collectExportGeometry pass (never ev.lastLeaves), sorts top-to-
+//       bottom by internal y (ascending — y grows downward), and pairs index-for-index; every
+//       touching leaf is already guaranteed fixed/window by the existing leafAllowedAgainstMeetingEdge
+//       rule, so no new type check was needed. Every pane gets a linkedPaneId (null unless it's
+//       part of a matched pair). A count mismatch between the two sides blocks the WHOLE export —
+//       buildExportData() now returns {ok, data|error}; both downloadExportFile() and the embed
+//       'done' handler check `ok` first and show the same visible in-page error (via the
+//       #configuratorError banner, generalized from batch 38's embed-only version) rather than
+//       producing a partial/malformed export — this check runs identically in standalone and embed
+//       mode. No change to rawState/rawStateSchemaVersion.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5300,7 +5320,62 @@ function resolveOverallDims(ev, index) {
   return { overallW, overallH };
 }
 
-function buildExportElevation(ev, index) {
+// Batch 39 — cross-elevation pane link (§7.4 item 1), computed fresh at export time, not stored
+// anywhere: no new tree-node field, no UI to create/manage it, nothing that can go stale. Only
+// relevant when a join exists (elevations.length === 2). For each elevation, finds whichever
+// meetingEdges entry is actually tagged 'meeting' (reuses the same MEETING_EDGE_UI_JAMBS list
+// addAngledJoin/removeAngledJoin already iterate over — does NOT assume jambL on one side and
+// jambR on the other, checks each elevation's own tag independently), collects the leaves
+// touching that edge via a fresh collectExportGeometry pass (same pattern buildExportElevation
+// itself uses — never ev.lastLeaves, which is only valid for whichever elevation last rendered),
+// sorts each side's list top-to-bottom by internal y (ascending — walk()/collectExportGeometry's
+// own coordinate convention has y increasing DOWNWARD, so ascending y really is top-to-bottom,
+// not bottom-to-top), and pairs index-for-index. Every leaf touching a meeting-tagged jamb is
+// already guaranteed type:'fixed', productClass:'window' by leafAllowedAgainstMeetingEdge's
+// existing blocking rule (enforced at join-creation and on every subsequent type reassignment via
+// makeTypeButton's own locked-edge gate) — no new type check needed here.
+//
+// Returns { ok: true, linksByElevation: [Map(paneId -> linkedPaneId), Map(...)] } on success, or
+// { ok: false, error: <human-readable string> } on a count mismatch — the caller (buildExportData)
+// must check `ok` and refuse to produce ANY export at all if false, per the batch prompt's own
+// "block export on a count mismatch" instruction; this function itself never throws or partially
+// returns links for a mismatched pair.
+function findMeetingJamb(ev) {
+  return MEETING_EDGE_UI_JAMBS.find(j => ev.meetingEdges[j] === 'meeting') || null;
+}
+function computeCrossElevationLinks() {
+  if (elevations.length !== 2) return { ok: true, linksByElevation: [new Map(), new Map()] };
+  const sides = elevations.map((ev, i) => {
+    const jamb = findMeetingJamb(ev);
+    const { overallW, overallH } = resolveOverallDims(ev, i);
+    const m = getMembers(ev);
+    const openingW = getOpeningW(overallW, m);
+    const openingH = getOpeningH(overallH, m);
+    const leaves = [];
+    collectExportGeometry(ev.root, 0, 0, openingW, openingH, [], leaves, []);
+    const touching = jamb == null ? [] :
+      leaves.filter(l => jamb === 'jambL' ? Math.abs(l.x) < EDGE_TOUCH_EPS_MM : Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM);
+    touching.sort((a, b) => a.y - b.y); // ascending internal y == top-to-bottom
+    return { ev, jamb, touching };
+  });
+  if (sides[0].touching.length !== sides[1].touching.length) {
+    return {
+      ok: false,
+      error: 'Cannot export: the two elevations’ meeting edges have a different number of panes touching them — ' +
+        sides[0].ev.name + ' has ' + sides[0].touching.length + ', ' + sides[1].ev.name + ' has ' + sides[1].touching.length +
+        '. Adjust the panes against the angled join’s meeting jamb on each elevation so the counts match, then export again.'
+    };
+  }
+  const linksByElevation = [new Map(), new Map()];
+  sides[0].touching.forEach((leafA, idx) => {
+    const leafB = sides[1].touching[idx];
+    linksByElevation[0].set(leafA.label, leafB.label);
+    linksByElevation[1].set(leafB.label, leafA.label);
+  });
+  return { ok: true, linksByElevation };
+}
+
+function buildExportElevation(ev, index, linkedPaneIds) {
   const { overallW, overallH } = resolveOverallDims(ev, index);
   const m = getMembers(ev);
   const openingW = getOpeningW(overallW, m);
@@ -5366,7 +5441,11 @@ function buildExportElevation(ev, index) {
       areaM2,
       visibleGlazedAreaM2,
       sashEdgesMM: { top: sashEdges.top, bottom: sashEdges.bottom, left: sashEdges.left, right: sashEdges.right },
-      unframedEdgeCount
+      unframedEdgeCount,
+      // Batch 39 — computed fresh every export by computeCrossElevationLinks(), never stored.
+      // null for every pane on a single-elevation system, and for any pane not touching this
+      // elevation's own meeting-tagged jamb.
+      linkedPaneId: linkedPaneIds.has(l.label) ? linkedPaneIds.get(l.label) : null
     };
   });
 
@@ -5487,25 +5566,56 @@ function restoreFromRawState(state) {
 // describes `system`'s own derived pane-list shape only; rawState is explicitly opaque to the
 // AS1288 tool (stored and returned unread, per this batch's own instruction), so it isn't part of
 // what schemaVersion versions. See configurator_export_schema.md's own rawState section.
+// Batch 39 — schemaVersion 2: system now also carries the system-level angledJoinAngleDeg/
+// angledJoinType (batches 35/36 — deliberately held out of `system` until this cross-elevation
+// pane link could ship alongside them, per the project doc's own standing note), and every pane
+// carries a computed (never stored) linkedPaneId. Bumped from 1 because this is a real, additive
+// shape change to `system` itself, not just rawState (which stays unversioned-by-schemaVersion,
+// per batch 37/38).
+//
+// Returns { ok: true, data } normally, or { ok: false, error } if computeCrossElevationLinks()
+// finds a count mismatch on the two elevations' meeting jambs — per the batch prompt's own "block
+// export on a count mismatch... before any export is built, in both standalone and embed mode"
+// instruction, this check runs FIRST, before touching buildExportElevation/serializeRawState at
+// all, so a mismatch produces genuinely no export (not a partial or malformed one) — both call
+// sites (downloadExportFile below and the embed 'done' handler) must check `ok` themselves.
 function buildExportData() {
-  const exportElevations = elevations.map((ev, i) => buildExportElevation(ev, i));
+  const links = computeCrossElevationLinks();
+  if (!links.ok) return { ok: false, error: links.error };
+  const exportElevations = elevations.map((ev, i) => buildExportElevation(ev, i, links.linksByElevation[i]));
   const totalFrameLengthMM = exportElevations.reduce((sum, e) => sum + e.frameLengthMM, 0);
   return {
-    schemaVersion: 1,
-    system: {
-      elevationCount: elevations.length,
-      totalFrameLengthMM,
-      elevations: exportElevations
-    },
-    rawState: serializeRawState()
+    ok: true,
+    data: {
+      schemaVersion: 2,
+      system: {
+        elevationCount: elevations.length,
+        totalFrameLengthMM,
+        angledJoinAngleDeg,
+        angledJoinType,
+        elevations: exportElevations
+      },
+      rawState: serializeRawState()
+    }
   };
 }
 
 // Filename: elevation count + today's date (yyyy-mm-dd), e.g. "configurator-export-2elev-2026-09-21.json".
 // Not pinned down by either the batch prompt or the schema doc — flagged as an assumption, not
 // silently invented, per the batch prompt's own instruction.
+//
+// Batch 39 — checks buildExportData()'s own {ok, ...} result before doing anything else. On a
+// mismatch (ok:false), shows the same visible in-page error the embed 'done' path uses below and
+// returns immediately — no file is downloaded, no partial/malformed JSON is produced. This is the
+// same check, not a standalone-specific one: the mismatch is blocked identically regardless of
+// which of the two export entry points (this one, or the embed 'done' handler) triggered it.
 function downloadExportFile() {
-  const data = buildExportData();
+  const result = buildExportData();
+  if (!result.ok) {
+    showConfiguratorError(result.error);
+    return;
+  }
+  const data = result.data;
   const json = JSON.stringify(data, null, 2);
   const today = new Date().toISOString().slice(0, 10);
   const filename = 'configurator-export-' + elevations.length + 'elev-' + today + '.json';
@@ -5540,13 +5650,15 @@ function postToParent(msg) {
   window.parent.postMessage(msg, window.location.origin);
 }
 
-// Batch 38 — in-page, persistent, visible error for a rawState schemaVersion this configurator
-// doesn't recognize (see the 'load' handler below). Deliberately NOT a console.log or alert() —
-// per the batch prompt, this must be impossible to miss. Shown in place; nothing else about the
-// page is blocked (the configurator still opens fresh/empty), but restoreFromRawState is never
-// called in this case — no partial/best-effort load is attempted.
-function showEmbedLoadError(message) {
-  const banner = document.getElementById('embedLoadError');
+// Batch 38/39 — in-page, persistent, visible error for anything that must block an operation
+// outright rather than degrade silently: a rawState schemaVersion this configurator doesn't
+// recognize (batch 38's 'load' handler below), or a cross-elevation pane-count mismatch blocking
+// export (batch 39, both standalone and embed). Deliberately NOT a console.log or alert() — must
+// be impossible to miss. Shown in place; nothing else about the page is blocked (the configurator
+// stays usable), but the blocked operation itself (restoreFromRawState, or producing an export)
+// is never attempted when this fires — no partial/best-effort result either way.
+function showConfiguratorError(message) {
+  const banner = document.getElementById('configuratorError');
   banner.textContent = message;
   banner.style.display = 'block';
 }
@@ -5568,7 +5680,7 @@ if (isEmbedded) {
     }
     const receivedVersion = msg.state.rawStateSchemaVersion;
     if (receivedVersion !== RAW_STATE_SCHEMA_VERSION) {
-      showEmbedLoadError(
+      showConfiguratorError(
         'This saved system was created with a newer or incompatible version of the configurator ' +
         '(schema version ' + JSON.stringify(receivedVersion) + ', expected ' + RAW_STATE_SCHEMA_VERSION + '). ' +
         'It has not been loaded — no changes have been made. Please contact support.'
@@ -5585,7 +5697,15 @@ document.getElementById('exportJsonBtn').addEventListener('click', () => {
     // (see the label-swap right after the initial render() call below), rather than adding a
     // second, separate embed-only button. Sends the postMessage instead of downloading a file;
     // standalone's file-download path (downloadExportFile) is completely untouched.
-    postToParent({ type: 'done', export: buildExportData() });
+    // Batch 39 — same buildExportData() {ok, ...} check as downloadExportFile above: on a
+    // cross-elevation pane-count mismatch, shows the in-page error and does NOT send 'done' at
+    // all — the mismatch is blocked identically in embed mode, not just standalone.
+    const result = buildExportData();
+    if (!result.ok) {
+      showConfiguratorError(result.error);
+      return;
+    }
+    postToParent({ type: 'done', export: result.data });
     return;
   }
   downloadExportFile();
@@ -5598,7 +5718,9 @@ if (isEmbedded) {
   // Handshake step 1: sent only after the page's own initial render() above has completed, i.e.
   // the embedded configurator has genuinely finished initializing — not before. Step 2 (waiting
   // for 'load') is the message listener registered above, already active by the time this sends.
-  postToParent({ type: 'ready', schemaVersion: 1 });
+  // Batch 39 — schemaVersion bumped to 2, matching system's own new shape (must match, per the
+  // doc's own statement of what this field means).
+  postToParent({ type: 'ready', schemaVersion: 2 });
 }
 </script>
 </body>

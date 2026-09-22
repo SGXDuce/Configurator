@@ -1,8 +1,8 @@
-# Configurator JSON Export Schema — v1 design
+# Configurator JSON Export Schema — v2 (v1 superseded, batch 39)
 
-Status: design only, nothing built yet. This is the spec to hand to Claude Code, not a description of existing behaviour.
+Status: built (v1 in batch 29, v2 in batch 39) — this document now describes the actual, current export shape, not a design-only proposal.
 
-Supersedes the open question in the project summary's §6.7 item 1 — the export shape has not been designed until now.
+Originally written to resolve the open question in the project summary's §6.7 item 1 — the export shape had not been designed before v1.
 
 ## Core principles this schema follows (already decided, not re-litigated)
 
@@ -16,16 +16,19 @@ Supersedes the open question in the project summary's §6.7 item 1 — the expor
   - Whether the pane's outer-touching edge coincides with a meeting-tagged jamb on the elevation (Case 1 — angled join, batch 26). This does not set sash*Locked on the pane at all — it's a separate mechanism, geometrically checked the same way leavesTouchingJamb() already does for the angled-join blocking rule. Missing this source would silently undercount every Case-1 pane.
   - **(Batch 30) A `type:'fixed'` pane's outer-touching edge on an elevation with `hasFrame:false`** (Case 3) — that edge has no jamb (frame is off) and no sash (fixed has none), so it's genuinely unframed even though it's neither a silicone joint nor a meeting-tagged edge. Guarded per-side against double-counting an edge that's ALSO meeting-tagged (Case 1 already counts that one). Only fires for `fixed` — every other type has its own real sash regardless of `hasFrame`. Export-only: the configurator's own live editing still allows `hasFrame:false` freely with no on-screen warning; this only affects what gets reported downstream.
 - Frame length is a real sum, not a per-pane figure alone. Three components, added together (see "Frame length calculation" below) — AS 1288 doesn't need this field at all, but pricing will, so it's computed now while the geometry is fresh, per your own call.
-- Case 1 fields not yet built (stored angle, cross-elevation pane link) are left out of this version entirely — not stubbed as null. When the angled-join creation flow is extended to prompt for the angle (separate future batch, per your own decision), schemaVersion bumps and those fields get added then. No placeholder debt in the meantime.
+- **(v2, batch 39)** The cross-elevation pane link is NOT a stored field anywhere — no new tree-node field, no UI to create/manage/edit it. It's computed fresh, directly from geometry, every single time an export is produced, so there's nothing to go stale. Each side's meeting-tagged jamb is found independently (never assumed to be jambL on one elevation and jambR on the other), its touching leaves are sorted top-to-bottom, and the two lists are paired index-for-index. A count mismatch between the two sides blocks the ENTIRE export, not just the link field — see "Export blocked on a pane-count mismatch" below.
+- **(v2, batch 39)** `angledJoinAngleDeg`/`angledJoinType` (batches 35/36) were deliberately held out of `system` until this pane link could ship alongside them, per this doc's own earlier note — both are now real, documented `system`-level fields, not stubs.
 
 ## Schema
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "system": {
-    "elevationCount": 1,
-    "totalFrameLengthMM": 3850,
+    "elevationCount": 2,
+    "totalFrameLengthMM": 7100,
+    "angledJoinAngleDeg": 135,
+    "angledJoinType": "mitred",
     "elevations": [
       {
         "name": "Elevation 1",
@@ -33,8 +36,8 @@ Supersedes the open question in the project summary's §6.7 item 1 — the expor
         "overallHeightMM": 900,
         "hasFrame": true,
         "frameMembersMM": { "head": 60, "sill": 60, "jambL": 60, "jambR": 60 },
-        "meetingEdges": { "head": null, "sill": null, "jambL": null, "jambR": null },
-        "frameLengthMM": 3850,
+        "meetingEdges": { "head": null, "sill": null, "jambL": null, "jambR": "meeting" },
+        "frameLengthMM": 3550,
         "panes": [
           {
             "id": "F",
@@ -51,24 +54,55 @@ Supersedes the open question in the project summary's §6.7 item 1 — the expor
             "areaM2": 0.47,
             "visibleGlazedAreaM2": 0.47,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
-            "unframedEdgeCount": 0
+            "unframedEdgeCount": 0,
+            "linkedPaneId": null
           },
           {
-            "id": "H",
+            "id": "F2",
             "productClass": "window",
-            "type": "hinged",
-            "hingeEdge": "left",
+            "type": "fixed",
+            "hingeEdge": null,
             "slideDirection": null,
             "bladeWidthMM": null,
             "bladeLengthMM": null,
             "xMM": 600,
             "yMM": 0,
             "widthMM": 600,
-            "heightMM": 780,
-            "areaM2": 0.47,
-            "visibleGlazedAreaM2": 0.31,
-            "sashEdgesMM": { "top": 40, "bottom": 40, "left": 40, "right": 40 },
-            "unframedEdgeCount": 0
+            "heightMM": 900,
+            "areaM2": 0.54,
+            "visibleGlazedAreaM2": 0.54,
+            "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
+            "unframedEdgeCount": 1,
+            "linkedPaneId": "F"
+          }
+        ]
+      },
+      {
+        "name": "Elevation 2",
+        "overallWidthMM": 1000,
+        "overallHeightMM": 900,
+        "hasFrame": true,
+        "frameMembersMM": { "head": 60, "sill": 60, "jambL": 60, "jambR": 60 },
+        "meetingEdges": { "head": null, "sill": null, "jambL": "meeting", "jambR": null },
+        "frameLengthMM": 3550,
+        "panes": [
+          {
+            "id": "F",
+            "productClass": "window",
+            "type": "fixed",
+            "hingeEdge": null,
+            "slideDirection": null,
+            "bladeWidthMM": null,
+            "bladeLengthMM": null,
+            "xMM": 0,
+            "yMM": 0,
+            "widthMM": 500,
+            "heightMM": 900,
+            "areaM2": 0.45,
+            "visibleGlazedAreaM2": 0.45,
+            "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
+            "unframedEdgeCount": 1,
+            "linkedPaneId": "F2"
           }
         ]
       }
@@ -78,7 +112,9 @@ Supersedes the open question in the project summary's §6.7 item 1 — the expor
 }
 ```
 
-A 2-elevation (angled join) system exports both elevations under `system.elevations[]`, each with its own `meetingEdges` populated where relevant. `totalFrameLengthMM` at the system level sums both elevations' own `frameLengthMM`.
+A 2-elevation (angled join) system exports both elevations under `system.elevations[]`, each with its own `meetingEdges` populated where relevant. `totalFrameLengthMM` at the system level sums both elevations' own `frameLengthMM`. `angledJoinAngleDeg`/`angledJoinType` are `null` on a single-elevation system, and every pane's `linkedPaneId` is `null` throughout in that case too — there's no meeting jamb to check.
+
+Note in the example above: `id` values are scoped per elevation (each elevation labels its own panes independently, starting fresh), so `linkedPaneId` is only meaningful together with knowing which elevation it refers to — Elevation 1's pane `"F2"` (`linkedPaneId: "F"`) refers to Elevation 2's pane `"F"`, not another pane within Elevation 1 itself. With a hard cap of 2 elevations, "the other elevation" is always unambiguous — no elevation index is included in `linkedPaneId`.
 
 ## Field notes
 
@@ -91,6 +127,20 @@ A 2-elevation (angled join) system exports both elevations under `system.elevati
 | `unframedEdgeCount` | Combines `sash*Locked` flags (Case 2), meeting-jamb-touching geometry (Case 1), and (batch 30) a `fixed` pane's outer-touching edge on a `hasFrame:false` elevation (Case 3) — see above. |
 | `visibleGlazedAreaM2` | Uses the renamed label from batch 28 — same computation as `areaM2` minus sash, unchanged. |
 | `frameLengthMM` | See calculation below. Not needed by AS 1288 — included for the future pricing tool. |
+| `linkedPaneId` (v2) | The other elevation's pane `id` this pane is joined to along the angled join's meeting jamb, or `null` if this pane doesn't touch that jamb (or no join exists at all). Computed fresh every export — never stored, never editable. See "Cross-elevation pane link" below. |
+| `angledJoinAngleDeg` / `angledJoinType` (v2, system-level) | The join's stored angle (degrees, 90–180) and construction type (`'butt'` or `'mitred'`) — both `null` on a single-elevation system. Live module-level values as captured at "Add angled join" time (batches 35/36), editable afterward via the persistent controls next to "Remove angled join". |
+
+## Cross-elevation pane link (v2, batch 39)
+
+Computed fresh at export time, directly from geometry — **not a stored field anywhere in the app's own data model.** There is no new field on any tree node and no UI to create, edit, or remove a link; nothing about it can go stale, because it's recomputed from scratch on every single export.
+
+For each elevation, the algorithm finds whichever of its four `meetingEdges` is actually tagged `'meeting'` (checked independently per elevation — never assumed to be `jambL` on one side and `jambR` on the other, since `addAngledJoin` always tags the two elevations' OPPOSITE jambs, not a fixed pair), collects every leaf touching that edge, sorts each elevation's list top-to-bottom by its own on-screen vertical position, and pairs the two lists index-for-index (first-with-first, second-with-second, and so on). Every leaf touching a meeting-tagged jamb is already guaranteed `type:'fixed', productClass:'window'` by the existing join-creation/edit blocking rule (`leafAllowedAgainstMeetingEdge`), so no new type restriction was needed to make this pairing meaningful.
+
+The common case is exactly one pane per side, which pairs trivially. Multiple stacked panes against the meeting jamb on both sides pair top-to-bottom, matching their real physical adjacency along the shared edge.
+
+## Export blocked on a pane-count mismatch (v2, batch 39)
+
+If the two elevations have a **different number** of panes touching their respective meeting-tagged jambs, the pairing above is ambiguous — there's no correct way to decide which extra pane(s) on one side correspond to nothing on the other. Rather than guess or drop panes silently, **the entire export is blocked**: neither the standalone file download nor the embed `done` message is produced, and a clear, persistent, visible in-page error is shown (never a console log or `alert()`) naming which elevation has how many panes touching the jamb. This check runs first, before any part of the export (including `rawState`) is built — a mismatch produces genuinely no export, not a partial or malformed one — and is identical in standalone and embed mode; it isn't an embed-only concern.
 
 ## Frame length calculation
 
@@ -138,7 +188,7 @@ When this configurator is opened inside an `<iframe>` (`window.parent !== window
 
 **Handshake, in order:**
 
-1. **`ready`** — sent by the configurator once its own initial render has genuinely finished (not before): `{ "type": "ready", "schemaVersion": 1 }`. `schemaVersion` here is the export's own `system` schema version (currently 1) — this tells the parent which derived-pane-list shape a subsequent `done` will use.
+1. **`ready`** — sent by the configurator once its own initial render has genuinely finished (not before): `{ "type": "ready", "schemaVersion": 2 }`. `schemaVersion` here is the export's own `system` schema version (currently 2, bumped from 1 in batch 39) — this tells the parent which derived-pane-list shape a subsequent `done` will use, and it always matches `done`'s own `export.schemaVersion`.
 2. **`load`** — sent by the parent in response, exactly once: `{ "type": "load", "state": null | <a previously-saved rawState blob> }`.
    - `state: null` — start a fresh, single-elevation session (the existing default). `restoreFromRawState()` is never called.
    - `state: { ...a real rawState object... }` — its own `rawStateSchemaVersion` is checked first. If it doesn't match the configurator's own `RAW_STATE_SCHEMA_VERSION`, the configurator shows a persistent, visible in-page error (not a console log, not an `alert()`) and stops — `restoreFromRawState()` is never called, no partial or best-effort load is attempted. If it matches, `restoreFromRawState(state)` runs and the session is fully reconstructed.
@@ -151,8 +201,8 @@ When this configurator is opened inside an `<iframe>` (`window.parent !== window
 
 ## What's deliberately NOT in this version
 
-- Cross-elevation pane-to-pane link (§7.4) — concrete shape still undesigned, separate from this batch. Once built, `system` will need a schema bump (v2) to represent it in the derived pane list.
 - FFL and room type — confirmed to live entirely on the AS 1288 tool's own schedule-row form, never in this export (§6.5, §6.7).
 - Any AS 1288-specific derivation (sidelight test, glazing-method bucketing) — runs on the receiving end, not here.
-- The angled join's stored angle (`angledJoinAngleDeg`, batch 35) and construction type (`angledJoinType`, batch 36) are both now built in-app, but deliberately still NOT part of `system`'s own derived shape — they live only in `rawState` (opaque) for now. Exposing them as real, documented `system`-level fields is exactly the v2 work the cross-elevation-pane-link bump above is already being held for; they won't be released into `system` piecemeal ahead of it.
 - Any row/system identifier — the parent owns this entirely; the postMessage protocol (batch 38) neither accepts nor returns one.
+
+**Now built, as of v2 (batch 39) — no longer open:** the cross-elevation pane-to-pane link (computed fresh at export time, not stored — see "Cross-elevation pane link" above), and `angledJoinAngleDeg`/`angledJoinType` as real, documented `system`-level fields (previously held back in batches 35–37, deliberately, until this pane link could ship alongside them).
