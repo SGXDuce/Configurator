@@ -73,7 +73,8 @@ Supersedes the open question in the project summary's §6.7 item 1 — the expor
         ]
       }
     ]
-  }
+  },
+  "rawState": { "...": "see \"rawState — raw internal state block\" below; opaque to any consumer" }
 }
 ```
 
@@ -103,9 +104,30 @@ Do NOT add anything extra for double-hung or sliding-overlap joins. Those panels
 
 Known simplification, flagged not hidden: each frame member's length is its full span (e.g. a 1800mm-wide head counts as 1800mm), not the shorter length after mitring the corners. Real corners lose a small amount to the mitre cut, unmodelled here. Accepted for now per your own call — revisit when building the pricing tool properly.
 
+## `rawState` — raw internal state block (batch 37)
+
+A second, separate top-level field, sitting alongside `system`, not inside it. Where `system` is a deliberately simplified, derived flat pane list (§'s own core principle above — the tree is "editing-session bookkeeping" that "nobody downstream needs to know"), `rawState` is the opposite: the configurator's actual live internal state, sufficient to fully reconstruct an editing session later (preset refs, hinged-door refs, sash locks, meeting edges, the split tree itself — everything `system` deliberately discards).
+
+**`rawState` is explicitly opaque to any consumer.** The AS 1288 tool (or any other reader) stores and returns it unread — it never parses or derives anything from `rawState`'s own contents. This is why `schemaVersion` does not cover it: `schemaVersion` versions `system`'s own derived shape only. `rawState`'s own internal shape can change freely between configurator versions without being a breaking change for any consumer, precisely because no consumer is expected to read it — it only round-trips through whatever external system stores it, until the configurator itself (via `restoreFromRawState()`) reads it back.
+
+Produced by `serializeRawState()`, consumed by `restoreFromRawState()` — both in `configurator_prototype_oxxo_8.html`. Shape, as of batch 37:
+
+```json
+{
+  "elevations": [ /* the full live elevation objects — tree, overallW/overallH, hasFrame,
+                     frameMembers, meetingEdges, meetingLink, selected, pendingSplit, etc. —
+                     not a derived form, the actual internal representation */ ],
+  "activeElevationIndex": 0,
+  "angledJoinAngleDeg": null,
+  "angledJoinType": null
+}
+```
+
+No UI calls `restoreFromRawState()` yet (batch 37 is prerequisite-only) — a future embed-mode batch will wire it to a "load" postMessage handler.
+
 ## What's deliberately NOT in this version
 
-- Stored angle value for an angled join (§7.4) — not built yet; will be captured via a UI prompt on "Add angled join" in a future batch, at which point this schema bumps to v2.
-- Cross-elevation pane-to-pane link (§7.4) — concrete shape still undesigned, separate from this batch.
+- Cross-elevation pane-to-pane link (§7.4) — concrete shape still undesigned, separate from this batch. Once built, `system` will need a schema bump (v2) to represent it in the derived pane list.
 - FFL and room type — confirmed to live entirely on the AS 1288 tool's own schedule-row form, never in this export (§6.5, §6.7).
 - Any AS 1288-specific derivation (sidelight test, glazing-method bucketing) — runs on the receiving end, not here.
+- The angled join's stored angle (`angledJoinAngleDeg`, batch 35) and construction type (`angledJoinType`, batch 36) are both now built in-app, but deliberately still NOT part of `system`'s own derived shape — they live only in `rawState` (opaque, batch 37) for now. Exposing them as real, documented `system`-level fields is exactly the v2 work the cross-elevation-pane-link bump above is already being held for; they won't be released into `system` piecemeal ahead of it.

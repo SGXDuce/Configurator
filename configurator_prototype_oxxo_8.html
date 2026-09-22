@@ -304,6 +304,22 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       range check). removeAngledJoin resets the field alongside angledJoinAngleDeg. No change to
 //       walk(), rendering, validation, or the export schema — not exported this batch, per its own
 //       instruction (the v1→v2 bump stays held for the still-undesigned cross-elevation pane link).
+// 37:   export — raw internal state block for round-trip editing. New serializeRawState()/
+//       restoreFromRawState() functions (prerequisite for a future embed-mode "load" message, not
+//       wired to any UI yet). Captures elevations (deep-cloned, overallW/overallH resolved via
+//       resolveOverallDims so the active elevation's DOM-sourced values are correct),
+//       activeElevationIndex, angledJoinAngleDeg, angledJoinType — every module-level `let` that is
+//       genuine session state, grep-confirmed against every top-level `let` in the file; deliberately
+//       excludes angledJoinPickerOpen/angledJoinPendingJamb/angledJoinPendingAngle (mid-interaction-
+//       only UI state), SCALE (derived display value), and resizeTimer (runtime plumbing).
+//       buildExportData() gains a new sibling `rawState` key alongside `system` — schemaVersion
+//       stays 1 (rawState is explicitly opaque to the AS1288 tool, not part of what schemaVersion
+//       describes); the existing `system` shape and its computation are byte-for-byte unchanged
+//       (diffed against the pre-batch code to confirm). Round-trip fidelity verified by hand-traced
+//       simulation of a session with an angled join (angle + joint type), an assembly-preset marker,
+//       an unframed silicone joint (locked edges), and a nested-sash hinged door — every field
+//       matched exactly after serialize→restore; a restore into a smaller state was confirmed to
+//       fully replace (not merge with) a larger prior session.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5351,6 +5367,91 @@ function buildExportElevation(ev, index) {
   };
 }
 
+// Batch 37 — raw internal state block, separate from the derived v1 pane-list export above.
+// Prerequisite for a future embed-mode "load" message (not this batch) that needs to fully
+// reconstruct an editing session — preset refs, hinged-door refs, sash locks, meeting edges, and
+// the split tree itself are all lost in buildExportData()'s derived flat-pane-list form, so a
+// second, separate, session-shaped block is needed for round-trip editing.
+//
+// Captures every module-level `let` that is genuine session state (grep-confirmed against every
+// top-level `let` in this file): elevations, activeElevationIndex, angledJoinAngleDeg,
+// angledJoinType. Deliberately excludes: angledJoinPickerOpen/angledJoinPendingJamb/
+// angledJoinPendingAngle (mid-interaction-only UI state for the "Add angled join" form itself —
+// meaningless to restore, since there's no in-progress form to resume into), SCALE (a purely
+// derived display/zoom value, recomputed by every render() call from computeScale(), never a
+// genuine property of the session), and resizeTimer (a setTimeout handle, pure runtime plumbing).
+//
+// Elevation objects are deep-cloned (via JSON round-trip — every field on an elevation object is
+// itself already plain JSON-safe data: numbers, strings, booleans, nested plain objects/arrays,
+// null; the tree has no functions or circular references) rather than returning live references,
+// so a later live edit to `elevations` can never retroactively corrupt an already-captured
+// snapshot — this makes the function safe to call and hold onto independently of when its result
+// is actually serialized to JSON, not just safe for the one immediate JSON.stringify call site
+// buildExportData() happens to use it from.
+//
+// Per-elevation overallW/overallH: reuses resolveOverallDims (batch 29) rather than reading
+// ev.overallW/overallH directly — the currently ACTIVE elevation's own object fields are stale
+// while it's active (the frameW/frameH DOM inputs are the live source of truth for it; see
+// newElevation's own comment above elevations/activeElevationIndex), so a naive elevations.map
+// without this would silently export a wrong width/height for whichever elevation happens to be
+// active at export time.
+function serializeRawState() {
+  const elevationsSnapshot = elevations.map((ev, i) => {
+    const { overallW, overallH } = resolveOverallDims(ev, i);
+    // JSON round-trip clone, then overwrite overallW/overallH with the resolved (possibly DOM-
+    // sourced) values — cloning first from `ev` as-is, then correcting just those two fields,
+    // rather than cloning a pre-corrected object, keeps this obviously equivalent to "clone ev,
+    // fix the one known-stale case" instead of quietly re-deriving the whole shape by hand.
+    const clone = JSON.parse(JSON.stringify(ev));
+    clone.overallW = overallW;
+    clone.overallH = overallH;
+    return clone;
+  });
+  return {
+    elevations: elevationsSnapshot,
+    activeElevationIndex,
+    angledJoinAngleDeg,
+    angledJoinType
+  };
+}
+
+// Batch 37 — the inverse of serializeRawState(): takes exactly what that function produces and
+// rebuilds the live session from it, leaving the app indistinguishable from having built that
+// session by hand. Not wired to any UI in this batch (no "Load JSON" button/file-picker) — exists
+// as a real, tested function that a future embed-mode "load" postMessage handler will call.
+//
+// Must explicitly overwrite every module-level field serializeRawState() captures — a stale
+// previous session (e.g. an existing 2-elevation angled join) must not partially survive a
+// restore into a smaller state; `elevations = state.elevations` (a full reassignment, not a
+// merge/splice into the existing array) and the three scalar assignments below are each a
+// complete replace, not an update, so nothing from before this call can leak through.
+//
+// Same DOM-sync requirement setActiveElevationIndex/removeAngledJoin already have to honour:
+// overallW/overallH and the four frame-member values live in DOM inputs while their elevation is
+// active, not just on the object, so the active elevation's own restored values must be pushed
+// into those inputs explicitly before render() — render() itself reads the DOM via
+// getOverallW()/getOverallH()/getMembers(), not from the elevation object directly.
+function restoreFromRawState(state) {
+  elevations = state.elevations;
+  activeElevationIndex = state.activeElevationIndex;
+  angledJoinAngleDeg = state.angledJoinAngleDeg;
+  angledJoinType = state.angledJoinType;
+  const active = activeElevation();
+  document.getElementById('frameW').value = active.overallW;
+  document.getElementById('frameH').value = active.overallH;
+  document.getElementById('headInput').value = active.frameMembers.head;
+  document.getElementById('sillInput').value = active.frameMembers.sill;
+  document.getElementById('jambLInput').value = active.frameMembers.jambL;
+  document.getElementById('jambRInput').value = active.frameMembers.jambR;
+  active.lastValidOverallW = active.overallW;
+  active.lastValidOverallH = active.overallH;
+  render();
+}
+
+// Batch 37 — `rawState` sits alongside `system` at the top level, NOT inside it — schemaVersion
+// describes `system`'s own derived pane-list shape only; rawState is explicitly opaque to the
+// AS1288 tool (stored and returned unread, per this batch's own instruction), so it isn't part of
+// what schemaVersion versions. See configurator_export_schema.md's own rawState section.
 function buildExportData() {
   const exportElevations = elevations.map((ev, i) => buildExportElevation(ev, i));
   const totalFrameLengthMM = exportElevations.reduce((sum, e) => sum + e.frameLengthMM, 0);
@@ -5360,7 +5461,8 @@ function buildExportData() {
       elevationCount: elevations.length,
       totalFrameLengthMM,
       elevations: exportElevations
-    }
+    },
+    rawState: serializeRawState()
   };
 }
 
