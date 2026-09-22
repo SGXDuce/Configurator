@@ -402,6 +402,37 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       tolerance-value fix only. Re-traced batch 40's three test cases against the new tolerance:
 //       same pass/block outcomes (1mm doesn't change round-number cases like 1000/1400mm, only how
 //       close "close enough" is).
+// 42:   sashless variant for sliding-window and double-hung presets. New SASHLESS_STILE_MM (10)
+//       and SASHLESS_FRAME_TUCKIN_MM (6, sliding-window only — 3mm/edge, a stated not derived
+//       figure, separate constant from FRAME_TUCKIN_MM so a non-sashless preset in the same
+//       session is unaffected) plus a new per-leaf `sashless: true` marker. New "Build sashless
+//       (no top/bottom sash, narrow stile)?" checkbox at preset creation, shown only for sliding-
+//       window (gated on productClass:'window' AND isSlidingOverlapId — excludes sliding doors,
+//       which share the same undefined family/pattern shape) and double-hung. Not a new pane type
+//       — same horizontal-slider/vertical-slider types, same tree structure, same overlap
+//       mechanics; only sash*MM values (and, for sliding-window, the tuck-in term in
+//       computeSlidingWinPrefillWidths/computeSlidingWinTotalWidth) differ. Threaded through
+//       confirmAssemblyPreset -> buildPresetTree -> buildAssemblyPresetTree (sliding) and
+//       confirmDoubleHungPreset -> buildDoubleHungPresetTree -> buildDoubleHungUnit (double-hung).
+//       Double-hung's overlapMM/getDoubleHungOverlapMM() is untouched — physical interlock
+//       distance doesn't depend on sash width; no frame tuck-in added for double-hung's stiles
+//       either (mirrors the already-open, unconfirmed gap around ordinary double-hung's own
+//       horizontal jamb tuck-in — not solved here for the sashless case or the pre-existing
+//       non-sashless case). Confirmed, not assumed: a sashless preset's "Edit assembly widths"
+//       reopen preserves sashless/zeroed-sash/SASHLESS_STILE_MM automatically, since
+//       buildSlidingWinOverlapTree only ever re-wraps the EXISTING live leaf object references on
+//       resize (never clones/re-stamps them) — the one real fix needed was making the reopen
+//       form's own tuck-in-dependent total-width validation read sashless-ness off those existing
+//       leaves (no ev.pendingSplit.sashless exists in edit mode, since there's no picker/checkbox
+//       step on reopen at all). getSashEdges/the render loop/glazedAreaM2 all confirmed
+//       (traced, not assumed) to already work correctly off the four numeric sash values with no
+//       type-based branching beyond the pre-existing type:'fixed' special-case — zero rendering
+//       code changed. renderPresetIcon confirmed to draw a fixed outline+arrow icon regardless of
+//       any preset's actual sash values (sashless or not) — a pre-existing limitation, noted as a
+//       known gap, not fixed this batch. Unchecked-checkbox behaviour confirmed byte-identical to
+//       before this batch (every new branch falls through to the prior DEFAULT_SASH_MM/
+//       FRAME_TUCKIN_MM behaviour when sashless is falsy/undefined). No export schema change — a
+//       sashless pane's export representation stays deliberately undecided pending AS1288.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -3270,6 +3301,12 @@ function renderAssemblyPresetForm(bar, rect) {
           // has a real mullion/transom (confirmed, no toggle) — this field is simply irrelevant
           // and unused for every other family.
           if (category.family === 'casement') ev.pendingSplit.includeMullion = false;
+          // Batch 42 — sashless defaults unchecked on fresh selection, same "explicit reset so a
+          // previous preset's leftover choice can't silently carry over" reasoning as
+          // matchedCatalogSize above. Only meaningful for sliding-window (see the checkbox's own
+          // gate in the form below); harmless to set unconditionally here since every other
+          // family simply never reads it.
+          ev.pendingSplit.sashless = false;
           render();
         };
         iconRow.appendChild(btn);
@@ -3345,6 +3382,36 @@ function renderAssemblyPresetForm(bar, rect) {
     bar.appendChild(toggleRow);
   }
 
+  // Batch 42 — sashless checkbox, sliding-window family only (fresh creation only, same as the
+  // casement toggle above — reopen never offers this choice at all; a sashless-ness change to an
+  // existing preset would need "Remove" + re-add, not an in-place edit). Gated on THREE things,
+  // not just `family === undefined` (which sliding shares with every other family whose pattern
+  // isn't recognized by detectPresetFamily): productClass === 'window' excludes sliding DOORS
+  // (same undefined family, same O/X pattern shape, but never sashless per the batch prompt), and
+  // isSlidingOverlapId(id, pattern) confirms this is genuinely a -win overlap id, not some other
+  // unrecognized-family edge case. Defaults unchecked; unchecked behaviour is byte-identical to
+  // before this batch (buildAssemblyPresetTree's `sashless` param defaults falsy).
+  const isSlidingWindowFamily = !isEditing && productClass === 'window' && isSlidingOverlapId(id, pattern);
+  const sashless = isSlidingWindowFamily ? !!ev.pendingSplit.sashless : false;
+  if (isSlidingWindowFamily) {
+    const sashlessRow = document.createElement('div');
+    sashlessRow.className = 'toolbar-row';
+    const sashlessLabel = document.createElement('label');
+    sashlessLabel.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;';
+    const sashlessCheckbox = document.createElement('input');
+    sashlessCheckbox.type = 'checkbox';
+    sashlessCheckbox.checked = sashless;
+    sashlessCheckbox.onchange = () => {
+      ev.pendingSplit.sashless = sashlessCheckbox.checked;
+      ev.pendingSplit.widths = null; // re-trigger the prefill below with the new tuck-in figure
+      render();
+    };
+    sashlessLabel.appendChild(sashlessCheckbox);
+    sashlessLabel.appendChild(document.createTextNode('Build sashless (no top/bottom sash, narrow stile)?'));
+    sashlessRow.appendChild(sashlessLabel);
+    bar.appendChild(sashlessRow);
+  }
+
   const sectionCount = getPresetSectionCount(pattern, family);
 
   // Batch 12: pre-fill from CURRENT live state the first time this form renders in edit mode
@@ -3374,7 +3441,7 @@ function renderAssemblyPresetForm(bar, rect) {
     // "closest standard size" info-line display (batch 15) — just no longer used to DRIVE the
     // prefilled widths for a sliding-overlap id.
     if (isSlidingOverlapId(id, pattern)) {
-      ev.pendingSplit.widths = computeSlidingWinPrefillWidths(pattern, rect.w, ev.hasFrame);
+      ev.pendingSplit.widths = computeSlidingWinPrefillWidths(pattern, rect.w, ev.hasFrame, ev.pendingSplit.sashless);
       if (match) ev.pendingSplit.matchedCatalogSize = match;
     } else if (family === 'casement' || family === 'awning') {
       // Batch 22: same "solve against real available space" principle as the batch-20 sliding
@@ -3398,9 +3465,13 @@ function renderAssemblyPresetForm(bar, rect) {
   // live-current values the form is itself pre-filled with (not cached from creation time).
   // Batch 17: a -win id has no mullion at all — its real total instead subtracts 60mm per
   // overlap join (computeSlidingWinTotalWidth), same formula used by confirmAssemblyEdit itself.
+  // Batch 42: sashless-ness (for the correct tuck-in figure) is read off the existing live leaves
+  // on reopen, same as confirmAssemblyEdit's own determination — see that function's comment for
+  // why this is the only place it can come from during an edit-mode reopen (no picker/checkbox
+  // step exists in this flow, so there's no ev.pendingSplit.sashless to read here).
   const availableWidth = isEditing
     ? (isSlidingOverlapId(id, pattern)
-        ? computeSlidingWinTotalWidth(pattern, ev.pendingSplit.widths)
+        ? computeSlidingWinTotalWidth(pattern, ev.pendingSplit.widths, getAssemblyLeafNodesInOrder(ev.pendingSplit.path, sectionCount, pattern, id).some(l => l.sashless === true))
         : ev.pendingSplit.widths.reduce((a, b) => a + (b || 0), 0) + (sectionCount - 1) * (ev.pendingSplit.mullionThickness || 0))
     : rect.w;
 
@@ -3596,11 +3667,30 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   row.appendChild(availableSpan);
   bar.appendChild(row);
 
+  // Batch 42 — sashless checkbox, double-hung family. Double-hung has no reopen mechanism at all
+  // (appendEditAssemblyWidthsButton bails out entirely for this family), so unlike sliding-window
+  // there's no separate reopen-survival concern to trace — this is the only place sashless-ness is
+  // ever decided for a double-hung preset. Defaults unchecked; unchecked behaviour is byte-
+  // identical to before this batch. overlapMM/getDoubleHungOverlapMM() is completely unrelated to
+  // this checkbox — the physical interlock distance between the two panes doesn't change with
+  // sash width, so nothing here touches it.
+  const sashlessRow = document.createElement('div');
+  sashlessRow.className = 'toolbar-row';
+  const sashlessLabel = document.createElement('label');
+  sashlessLabel.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;';
+  const sashlessCheckbox = document.createElement('input');
+  sashlessCheckbox.type = 'checkbox';
+  sashlessCheckbox.id = 'dhSashlessCheckbox';
+  sashlessLabel.appendChild(sashlessCheckbox);
+  sashlessLabel.appendChild(document.createTextNode('Build sashless (no top/bottom sash, narrow stile)?'));
+  sashlessRow.appendChild(sashlessLabel);
+  bar.appendChild(sashlessRow);
+
   const btnRow = document.createElement('div');
   btnRow.className = 'toolbar-row';
   const confirmBtn = document.createElement('button');
   confirmBtn.textContent = 'Confirm preset';
-  confirmBtn.onclick = () => confirmDoubleHungPreset(rect, pattern, productClass, unitCount);
+  confirmBtn.onclick = () => confirmDoubleHungPreset(rect, pattern, productClass, unitCount, sashlessCheckbox.checked);
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'secondary';
   cancelBtn.textContent = 'Cancel';
@@ -3639,7 +3729,11 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
 // (batch 21) instead: this validation now computes bottomHeight the SAME way the actual tree
 // node's overlapMM is set, so it can never again believe topHeight===bottomHeight while the real
 // rendered geometry disagrees.
-function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
+// Batch 42: `sashless` is an explicit new last parameter (not read off ev.pendingSplit — this
+// function is called directly with the checkbox's own live .checked value, matching how every
+// other double-hung input here is read directly from its own DOM element rather than staged
+// through pendingSplit first).
+function confirmDoubleHungPreset(rect, pattern, productClass, unitCount, sashless) {
   const ev = activeElevation();
   const errDiv = document.getElementById('presetWidthError');
   const unitWidth = Number(document.getElementById('dhUnitWidthInput').value);
@@ -3676,7 +3770,7 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount) {
     ? { hingeEdge: targetNode.hingeEdge || 'left' }
     : (existingAncestor ? existingAncestor.hingedDoorRef : null);
 
-  const tree = buildDoubleHungPresetTree(pattern, unitWidth, topHeight, mullionThickness, productClass);
+  const tree = buildDoubleHungPresetTree(pattern, unitWidth, topHeight, mullionThickness, productClass, sashless);
   // Batch 19: a single-unit (D) preset's top-level node is now directly the sashSplit itself —
   // buildDoubleHungPresetTree/foldSectionsIntoSplits never wraps a single leaf in a plain split
   // (the fold loop simply doesn't run for length-1 input), so tree.kind === 'split' alone would
@@ -3725,8 +3819,12 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
     errDiv.textContent = 'Enter a mullion thickness greater than 0.';
     return;
   }
+  // Batch 42 — sashless-ness only ever comes from ev.pendingSplit.sashless (set by the sliding-
+  // window-only checkbox in renderAssemblyPresetForm; always falsy for every other family/id,
+  // including sliding DOORS, which never render that checkbox at all).
+  const sashless = !!ev.pendingSplit.sashless;
   const enteredTotal = isSlidingOverlapId(id, pattern)
-    ? computeSlidingWinTotalWidth(pattern, sectionWidths)
+    ? computeSlidingWinTotalWidth(pattern, sectionWidths, sashless)
     : sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
   const available = rect.w;
   // Same convention as confirmSplit's own error message: state the entered total against the
@@ -3758,7 +3856,7 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
   // 'window' for the other categories. buildPresetTree dispatches by family to
   // buildAssemblyPresetTree (sliding, -win ids now get the overlap tree — batch 17) or the
   // batch-13 casement/awning builders.
-  const tree = buildPresetTree(pattern, sectionWidths, mullionThickness, productClass, family, id);
+  const tree = buildPresetTree(pattern, sectionWidths, mullionThickness, productClass, family, id, sashless);
   // Batch 17: a -win preset's top-level node can be a sashSplit (e.g. OX-win/OXX-win/XOX-win,
   // whose sections form a single overlap run with no flush join at all — only OXXO-win's middle
   // flush join produces a plain 'split' at the top) — so every marker/ref stamp below must
@@ -3886,8 +3984,18 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
     errDiv.textContent = 'Enter a mullion thickness greater than 0.';
     return;
   }
+  // Batch 42 — fetched here (before enteredTotal) rather than at its old spot further down, so a
+  // sashless row's real tuck-in (SASHLESS_FRAME_TUCKIN_MM, not FRAME_TUCKIN_MM) can be determined
+  // and used for THIS reopen's own validation total. Sashless-ness has no `ev.pendingSplit` flag
+  // to read on an edit-mode pendingSplit (unlike fresh creation) — there's no picker/checkbox step
+  // in the reopen flow at all — so it's read directly off the EXISTING live leaf objects instead,
+  // which already carry `sashless: true` from whichever preset run originally built them (see
+  // buildAssemblyPresetTree's own comment on why this flag survives a reopen untouched: this same
+  // rebuild only re-wraps the existing leaf object references, it never re-stamps or clones them).
+  const existingLeaves = getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id);
+  const sashless = existingLeaves.some(l => l.sashless === true);
   const enteredTotal = isSlidingOverlapId(id, pattern)
-    ? computeSlidingWinTotalWidth(pattern, sectionWidths)
+    ? computeSlidingWinTotalWidth(pattern, sectionWidths, sashless)
     : sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
   // Same convention as confirmSplit's own error message and confirmAssemblyPreset above: state
   // the entered total against the available width, don't auto-resize the region — the marked
@@ -3899,7 +4007,6 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
     return;
   }
 
-  const existingLeaves = getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id);
   // Fold sections into nested v-axis splits, right to left — identical geometry to
   // buildAssemblyPresetTree, but with the EXISTING leaf nodes (whatever they've become since
   // creation) instead of freshly-built ones. Batch 17: a -win id instead rebuilds via
@@ -4706,6 +4813,25 @@ const SLIDING_OVERLAP_MM = 60;
 // touches the outer frame) originated there.
 const FRAME_TUCKIN_MM = 40;
 
+// Batch 42 — sashless variant for sliding-window and double-hung presets. Not a new pane type —
+// same horizontal-slider/vertical-slider types, same tree structure, same overlap mechanics
+// throughout; only the per-edge sash values (and, for sliding-window, the tuck-in figure used to
+// size the row) differ. Windows only — sliding doors, casement, and awning never offer this.
+//
+// SASHLESS_STILE_MM — the hardcoded left/right stile width a sashless preset stamps, replacing
+// whatever DEFAULT_SASH_MM (or PRESET_SASH_EDGES) that family's normal preset would otherwise
+// stamp. A fixed new default, not derived from anything existing in this file.
+const SASHLESS_STILE_MM = 10;
+// SASHLESS_FRAME_TUCKIN_MM — sliding-window family only. Same "flat per row, not per panel" shape
+// as FRAME_TUCKIN_MM above (2 frame-touching edges × a fixed mm-per-edge figure), but built from
+// 3mm hidden per edge instead of 20mm — i.e. 2 × 3mm = 6mm/row, leaving 7mm of the 10mm stile
+// visible at each jamb. The 3mm/edge figure is a stated value for this batch, not independently
+// derived or confirmed against a real drawing — same honesty standard the original 40mm
+// (20mm/edge) tuck-in got when it was first built. Deliberately a SEPARATE constant from
+// FRAME_TUCKIN_MM, not a branch inside it — a non-sashless preset built in the same session must
+// keep using the real 40mm tuck-in completely unchanged.
+const SASHLESS_FRAME_TUCKIN_MM = 6;
+
 // Batch 22 — casement/awning sash width prefill, solved against the real selected region width
 // (rect.w), same principle as the sliding prefill fix (batch 20): a catalog total is a different
 // number from the region actually being divided, so equally splitting a catalog total (the old
@@ -4749,7 +4875,10 @@ function isSlidingOverlapId(id, pattern) {
 // unchanged) rather than only ever reading the global directly — makes the tuck-in gating
 // testable/traceable against an explicit value without depending on global state, and matches
 // this batch's own call site, which passes it explicitly.
-function computeSlidingWinPrefillWidths(pattern, totalWidthMM, hasFrameFlag) {
+// Batch 42 — `sashless` (default false) selects SASHLESS_FRAME_TUCKIN_MM (6) instead of
+// FRAME_TUCKIN_MM (40) for the tuck-in term only; every other part of this formula (panel sizing,
+// overlap accounting) is unaffected by sashless-ness, per the batch prompt's own instruction.
+function computeSlidingWinPrefillWidths(pattern, totalWidthMM, hasFrameFlag, sashless) {
   const useFrame = hasFrameFlag === undefined ? activeElevation().hasFrame : hasFrameFlag;
   const slideDirections = computeDefaultSlideDirections(pattern);
   const n = pattern.length;
@@ -4759,7 +4888,7 @@ function computeSlidingWinPrefillWidths(pattern, totalWidthMM, hasFrameFlag) {
   }
   const nO = pattern.split('').filter(c => c === 'O').length;
   const nX = n - nO;
-  const tuckIn = useFrame ? FRAME_TUCKIN_MM : 0;
+  const tuckIn = useFrame ? (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM) : 0;
   let O = (totalWidthMM - SLIDING_OVERLAP_MM * nX + SLIDING_OVERLAP_MM * overlapJoins + tuckIn) / (nO + nX);
   if (Math.abs(O - Math.round(O / 5) * 5) > 0.01) O = Math.round(O / 5) * 5;
   const X = O + SLIDING_OVERLAP_MM;
@@ -4774,13 +4903,15 @@ function computeSlidingWinPrefillWidths(pattern, totalWidthMM, hasFrameFlag) {
 // is no tuck-in to subtract, so T equals the overlap-only reduction, matching batch 17). There
 // is no mullion at any sliding-overlap join, so unlike every other family this total is never
 // sectionWidths-plus-mullions.
-function computeSlidingWinTotalWidth(pattern, sectionWidthsMM) {
+// Batch 42 — `sashless` (default false) swaps in SASHLESS_FRAME_TUCKIN_MM (6) for the tuck-in
+// term, same as the prefill function above; overlap accounting is unaffected by sashless-ness.
+function computeSlidingWinTotalWidth(pattern, sectionWidthsMM, sashless) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   let total = sectionWidthsMM.reduce((a, b) => a + b, 0);
   for (let i = 0; i < pattern.length - 1; i++) {
     if (classifySlidingWinJoin(pattern, i, slideDirections).type === 'overlap') total -= SLIDING_OVERLAP_MM;
   }
-  if (activeElevation().hasFrame) total -= FRAME_TUCKIN_MM;
+  if (activeElevation().hasFrame) total -= (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM);
   return total;
 }
 
@@ -4910,15 +5041,30 @@ function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
 // effectively unreachable for every current sliding preset id (batch 18 extended the overlap
 // treatment to doors too) — kept in place rather than deleted, since it's still the fallback
 // for `id` undefined/non-sliding and it's cheap to keep as a defensive default.
-function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id) {
+// Batch 42 — `sashless` (default false) stamps every leaf with SASHLESS_STILE_MM left/right and
+// zero top/bottom (glass edge-to-edge top and bottom — the two genuinely unsupported edges, per
+// AS1288's own definition of this condition) plus a `sashless: true` marker, instead of the
+// normal uniform DEFAULT_SASH_MM on all four edges. Applies to every leaf, O and X alike — an O
+// ('fixed') leaf's sash values are already dead weight for rendering/area purposes (glazedAreaM2
+// and the render loop both special-case type:'fixed' and ignore sash values entirely), so
+// stamping them sashless too is harmless and keeps the leaf-construction logic uniform rather
+// than adding a type-conditional branch here for no behavioural benefit.
+function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id, sashless) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   const leaves = pattern.split('').map((ch, i) => {
     const type = ch === 'O' ? 'fixed' : 'horizontal-slider';
-    const leaf = {
-      kind: 'filled', type, productClass,
-      sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM,
-      sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM
-    };
+    const leaf = sashless
+      ? {
+          kind: 'filled', type, productClass,
+          sashTopMM: 0, sashBottomMM: 0,
+          sashLeftMM: SASHLESS_STILE_MM, sashRightMM: SASHLESS_STILE_MM,
+          sashless: true
+        }
+      : {
+          kind: 'filled', type, productClass,
+          sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM,
+          sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM
+        };
     if (type === 'horizontal-slider') leaf.slideDirection = slideDirections[i];
     return leaf;
   });
@@ -5020,24 +5166,42 @@ const DOUBLE_HUNG_OVERLAP_MM = 60;
 function getDoubleHungOverlapMM() {
   return DOUBLE_HUNG_OVERLAP_MM + (activeElevation().hasFrame ? FRAME_TUCKIN_MM : 0);
 }
-function buildDoubleHungUnit(productClass, topHeightMM) {
+// Batch 42 — `sashless` (default false): overlapMM/getDoubleHungOverlapMM() is completely
+// unchanged either way — the physical interlock distance between the two panes is not affected
+// by sash width. Only the four sash*MM values (and the new sashless marker) differ. Per the top
+// leaf being children[0] (fromEdge:'start' places it at the top, per walk()'s own h-axis
+// convention — confirmed against walk()'s sashSplit branch directly) and the bottom leaf being
+// children[1]: top leaf's own top edge (sashTopMM) and its meeting-rail edge (sashBottomMM, the
+// edge touching the bottom leaf) are both unsupported/zeroed; bottom leaf's own bottom edge
+// (sashBottomMM) and its meeting-rail edge (sashTopMM, touching the top leaf) are both zeroed too
+// — both leaves end up with identical all-zero top/bottom, arrived at via the prompt's own more
+// explicit per-edge reasoning rather than a single "zero both" shortcut.
+function buildDoubleHungUnit(productClass, topHeightMM, sashless) {
+  const topLeaf = sashless
+    ? { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
+        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_STILE_MM, sashRightMM: SASHLESS_STILE_MM, sashless: true }
+    : { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
+        sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM };
+  const bottomLeaf = sashless
+    ? { kind: 'filled', type: 'vertical-slider', slideDirection: 'up', productClass,
+        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_STILE_MM, sashRightMM: SASHLESS_STILE_MM, sashless: true }
+    : { kind: 'filled', type: 'vertical-slider', slideDirection: 'up', productClass,
+        sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM };
   return {
     kind: 'sashSplit', axis: 'h', fromEdge: 'start', sashSizeMM: topHeightMM, overlapMM: getDoubleHungOverlapMM(),
-    children: [
-      { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
-        sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM },
-      { kind: 'filled', type: 'vertical-slider', slideDirection: 'up', productClass,
-        sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM }
-    ]
+    children: [topLeaf, bottomLeaf]
   };
 }
 // Batch 19: transomThicknessMM parameter removed — there's nothing to type or pass through, the
 // overlap is a fixed DOUBLE_HUNG_OVERLAP_MM, same precedent as a sliding-overlap id having no
 // mullion parameter at all (§2.9).
-function buildDoubleHungPresetTree(pattern, unitWidthMM, topHeightMM, mullionThicknessMM, productClass) {
+// Batch 42: `sashless` threaded straight through to every unit — a double-hung preset with
+// multiple units (DD/DDD) is all-or-nothing sashless, matching the single checkbox in
+// renderDoubleHungPresetForm (no per-unit choice offered).
+function buildDoubleHungPresetTree(pattern, unitWidthMM, topHeightMM, mullionThicknessMM, productClass, sashless) {
   const unitCount = DOUBLE_HUNG_UNIT_COUNTS[pattern];
   const units = [];
-  for (let i = 0; i < unitCount; i++) units.push(buildDoubleHungUnit(productClass, topHeightMM));
+  for (let i = 0; i < unitCount; i++) units.push(buildDoubleHungUnit(productClass, topHeightMM, sashless));
   const unitWidths = new Array(unitCount).fill(unitWidthMM);
   return foldSectionsIntoSplits(units, unitWidths, mullionThicknessMM);
 }
@@ -5051,10 +5215,13 @@ function buildDoubleHungPresetTree(pattern, unitWidthMM, topHeightMM, mullionThi
 // dispatcher's (pattern, sectionWidthsMM, mullionThicknessMM, productClass) shape.
 // Batch 17: `id` threaded through as an explicit optional last parameter, used only by the
 // sliding (O/X) branch — casement/awning ids never carry -win-style suffix semantics.
-function buildPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, family, id) {
+// Batch 42: `sashless` threaded through the same way, also sliding-only — casement/awning never
+// offer the sashless checkbox (see renderAssemblyPresetForm), so it's always undefined/falsy for
+// those two branches and buildAssemblyPresetTree's own default-false handling covers it.
+function buildPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, family, id, sashless) {
   if (family === 'casement') return buildCasementPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass);
   if (family === 'awning') return buildAwningPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass);
-  return buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id);
+  return buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id, sashless);
 }
 
 function confirmSashSplit(rect) {
