@@ -294,6 +294,16 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       90–180 validation, invalid entry rejected/reverted inline (never silently clamped).
 //       removeAngledJoin resets the field to null in the same block meetingEdges/meetingLink
 //       already get reset. No change to walk(), rendering, validation, or the export schema.
+// 36:   angled join construction type (§7.4) — new system-level angledJoinType (null | 'butt' |
+//       'mitred'), same pattern as angledJoinAngleDeg. "Add angled join" now has a third creation
+//       step (joint type, after angle entry) via a new angledJoinPendingAngle intermediate state
+//       (mirrors angledJoinPendingJamb); the join is only created once jamb, angle, AND joint type
+//       are all provided — cancelling the joint-type step cancels the whole action, same as
+//       cancelling the angle step already did. A persistent <select> next to the angle input
+//       allows editing afterward, same reject/revert-inline behaviour (enum check instead of a
+//       range check). removeAngledJoin resets the field alongside angledJoinAngleDeg. No change to
+//       walk(), rendering, validation, or the export schema — not exported this batch, per its own
+//       instruction (the v1→v2 bump stays held for the still-undesigned cross-elevation pane link).
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -397,6 +407,11 @@ let activeElevationIndex = 0;
 // does. Set by addAngledJoin, editable afterward via renderElevationTabs' own input, reset to
 // null by removeAngledJoin.
 let angledJoinAngleDeg = null;
+// Batch 36 — the join's construction type (§7.4), same system-level pattern as angledJoinAngleDeg
+// directly above: not per-elevation, not nested in meetingLink, since there's only ever one join.
+// null when no join exists; 'butt' or 'mitred' once one does. Set by addAngledJoin, editable
+// afterward via renderElevationTabs' own control, reset to null by removeAngledJoin.
+let angledJoinType = null;
 function activeElevation() { return elevations[activeElevationIndex]; }
 
 // Batch 25 — switching elevations. overallW/overallH live in the frameW/frameH DOM inputs while
@@ -453,9 +468,18 @@ function setActiveElevationIndex(index) {
 // the WHOLE "Add angled join" action (not fall back to step 1) — per the batch prompt's own
 // instruction not to create a join with a null angle — so its Cancel button resets both
 // angledJoinPickerOpen and angledJoinPendingJamb together, identically to step 1's own Cancel.
+//
+// Batch 36 — a third creation step, joint type (butt/mitred), now follows angle entry.
+// angledJoinPendingAngle holds the confirmed angle between steps 2 and 3, same pattern as
+// angledJoinPendingJamb holding the jamb between steps 1 and 2 — null while step 2 is still
+// showing; set once step 3 (joint type) is showing. Cancelling step 3 cancels the WHOLE action,
+// same "don't fall back a step" rule as step 2's own Cancel, per this batch's own instruction that
+// the join is only created once jamb, angle, AND joint type are all provided.
 let angledJoinPickerOpen = false;
 let angledJoinPendingJamb = null;
+let angledJoinPendingAngle = null;
 const ANGLED_JOIN_ANGLE_MIN = 90, ANGLED_JOIN_ANGLE_MAX = 180;
+const ANGLED_JOIN_TYPES = ['butt', 'mitred'];
 function renderElevationTabs() {
   const wrap = document.getElementById('elevationTabs');
   wrap.innerHTML = '';
@@ -494,6 +518,40 @@ function renderElevationTabs() {
     wrap.appendChild(angleLabel);
     wrap.appendChild(angleInput);
     wrap.appendChild(angleErr);
+    // Batch 36 — persistent joint-type editor, same "always shown for as long as the join
+    // exists" pattern as the angle input directly above. An enum check instead of a range check,
+    // but otherwise identical reject/revert-inline behaviour on an invalid value.
+    const typeLabel = document.createElement('span');
+    typeLabel.style.fontSize = '12px';
+    typeLabel.style.color = 'var(--text-dim)';
+    typeLabel.textContent = 'Joint type';
+    const typeSelect = document.createElement('select');
+    ANGLED_JOIN_TYPES.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t;
+      opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+      if (angledJoinType === t) opt.selected = true;
+      typeSelect.appendChild(opt);
+    });
+    typeSelect.addEventListener('change', () => {
+      // A <select> built only from ANGLED_JOIN_TYPES options can never actually produce an
+      // out-of-enum value through the UI itself, but the same reject/revert-inline shape as the
+      // angle field is kept here anyway (per the batch prompt's own "reject/revert like the angle
+      // field's check, just an enum check instead of a range check") rather than assuming the
+      // browser can't be coaxed into an invalid state some other way.
+      if (!ANGLED_JOIN_TYPES.includes(typeSelect.value)) {
+        typeErr.textContent = 'Choose butt or mitred.';
+        typeSelect.value = angledJoinType;
+        return;
+      }
+      typeErr.textContent = '';
+      angledJoinType = typeSelect.value;
+    });
+    const typeErr = document.createElement('span');
+    typeErr.style.cssText = 'font-size:11px;color:var(--danger);';
+    wrap.appendChild(typeLabel);
+    wrap.appendChild(typeSelect);
+    wrap.appendChild(typeErr);
     const removeBtn = document.createElement('button');
     removeBtn.className = 'secondary';
     removeBtn.textContent = 'Remove angled join';
@@ -505,7 +563,7 @@ function renderElevationTabs() {
     const addBtn = document.createElement('button');
     addBtn.className = 'secondary';
     addBtn.textContent = 'Add angled join';
-    addBtn.onclick = () => { angledJoinPickerOpen = true; angledJoinPendingJamb = null; render(); };
+    addBtn.onclick = () => { angledJoinPickerOpen = true; angledJoinPendingJamb = null; angledJoinPendingAngle = null; render(); };
     wrap.appendChild(addBtn);
     return;
   }
@@ -522,45 +580,96 @@ function renderElevationTabs() {
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'secondary';
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.onclick = () => { angledJoinPickerOpen = false; angledJoinPendingJamb = null; render(); };
+    cancelBtn.onclick = () => { angledJoinPickerOpen = false; angledJoinPendingJamb = null; angledJoinPendingAngle = null; render(); };
     wrap.appendChild(cancelBtn);
     return;
   }
-  // Batch 35 — step 2: angle entry. No default/prefilled value (input starts empty) — explicit
-  // entry is required, per the batch prompt.
-  const angleLabel = document.createElement('span');
-  angleLabel.textContent = 'Angle between the two elevations (degrees, ' + ANGLED_JOIN_ANGLE_MIN + '–' + ANGLED_JOIN_ANGLE_MAX + '): ';
-  wrap.appendChild(angleLabel);
-  const angleInput = document.createElement('input');
-  angleInput.type = 'number';
-  angleInput.id = 'angledJoinAngleInput';
-  angleInput.style.cssText = 'width:70px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;';
-  wrap.appendChild(angleInput);
-  const angleErrDiv = document.createElement('div');
-  angleErrDiv.className = 'field-error';
-  const confirmBtn = document.createElement('button');
-  confirmBtn.textContent = 'Confirm';
-  confirmBtn.onclick = () => {
-    const raw = angleInput.value;
-    const v = Number(raw);
-    if (!raw.trim() || Number.isNaN(v) || v < ANGLED_JOIN_ANGLE_MIN || v > ANGLED_JOIN_ANGLE_MAX) {
-      angleErrDiv.textContent = 'Enter a number between ' + ANGLED_JOIN_ANGLE_MIN + ' and ' + ANGLED_JOIN_ANGLE_MAX + '.';
+  if (!angledJoinPendingAngle) {
+    // Batch 35 — step 2: angle entry. No default/prefilled value (input starts empty) — explicit
+    // entry is required, per the batch prompt.
+    // Batch 36 — no longer creates the join directly on Confirm; instead advances to step 3
+    // (joint type) by setting angledJoinPendingAngle, mirroring how step 1's jamb button sets
+    // angledJoinPendingJamb rather than creating anything itself.
+    const angleLabel = document.createElement('span');
+    angleLabel.textContent = 'Angle between the two elevations (degrees, ' + ANGLED_JOIN_ANGLE_MIN + '–' + ANGLED_JOIN_ANGLE_MAX + '): ';
+    wrap.appendChild(angleLabel);
+    const angleInput = document.createElement('input');
+    angleInput.type = 'number';
+    angleInput.id = 'angledJoinAngleInput';
+    angleInput.style.cssText = 'width:70px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;';
+    wrap.appendChild(angleInput);
+    const angleErrDiv = document.createElement('div');
+    angleErrDiv.className = 'field-error';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.textContent = 'Confirm';
+    confirmBtn.onclick = () => {
+      const raw = angleInput.value;
+      const v = Number(raw);
+      if (!raw.trim() || Number.isNaN(v) || v < ANGLED_JOIN_ANGLE_MIN || v > ANGLED_JOIN_ANGLE_MAX) {
+        angleErrDiv.textContent = 'Enter a number between ' + ANGLED_JOIN_ANGLE_MIN + ' and ' + ANGLED_JOIN_ANGLE_MAX + '.';
+        return;
+      }
+      angledJoinPendingAngle = v;
+      render();
+    };
+    wrap.appendChild(confirmBtn);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'secondary';
+    cancelBtn.textContent = 'Cancel';
+    // Cancelling this step cancels the WHOLE "Add angled join" action, per the batch prompt — does
+    // NOT fall back to the jamb-picker step.
+    cancelBtn.onclick = () => { angledJoinPickerOpen = false; angledJoinPendingJamb = null; angledJoinPendingAngle = null; render(); };
+    wrap.appendChild(cancelBtn);
+    wrap.appendChild(angleErrDiv);
+    return;
+  }
+  // Batch 36 — step 3: joint type. Same "no default/prefilled value" rule as step 2's angle
+  // input — the <select> starts on its first real option only because that's how an unselected
+  // native <select> renders, NOT because 'butt' is being treated as a default; the person must
+  // still actively choose and Confirm before the join is created, same as every other step.
+  const typeLabel = document.createElement('span');
+  typeLabel.textContent = 'Joint type: ';
+  wrap.appendChild(typeLabel);
+  const typeSelect = document.createElement('select');
+  typeSelect.id = 'angledJoinTypeInput';
+  const placeholderOpt = document.createElement('option');
+  placeholderOpt.value = '';
+  placeholderOpt.textContent = '— choose —';
+  placeholderOpt.selected = true;
+  typeSelect.appendChild(placeholderOpt);
+  ANGLED_JOIN_TYPES.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+    typeSelect.appendChild(opt);
+  });
+  wrap.appendChild(typeSelect);
+  const typeErrDiv = document.createElement('div');
+  typeErrDiv.className = 'field-error';
+  const confirmTypeBtn = document.createElement('button');
+  confirmTypeBtn.textContent = 'Confirm';
+  confirmTypeBtn.onclick = () => {
+    if (!ANGLED_JOIN_TYPES.includes(typeSelect.value)) {
+      typeErrDiv.textContent = 'Choose butt or mitred.';
       return;
     }
     const jamb = angledJoinPendingJamb;
+    const angleDeg = angledJoinPendingAngle;
+    const joinType = typeSelect.value;
     angledJoinPickerOpen = false;
     angledJoinPendingJamb = null;
-    addAngledJoin(jamb, v);
+    angledJoinPendingAngle = null;
+    addAngledJoin(jamb, angleDeg, joinType);
   };
-  wrap.appendChild(confirmBtn);
-  const cancelBtn = document.createElement('button');
-  cancelBtn.className = 'secondary';
-  cancelBtn.textContent = 'Cancel';
-  // Cancelling this step cancels the WHOLE "Add angled join" action, per the batch prompt — does
-  // NOT fall back to the jamb-picker step.
-  cancelBtn.onclick = () => { angledJoinPickerOpen = false; angledJoinPendingJamb = null; render(); };
-  wrap.appendChild(cancelBtn);
-  wrap.appendChild(angleErrDiv);
+  wrap.appendChild(confirmTypeBtn);
+  const cancelTypeBtn = document.createElement('button');
+  cancelTypeBtn.className = 'secondary';
+  cancelTypeBtn.textContent = 'Cancel';
+  // Cancelling this step cancels the WHOLE "Add angled join" action, same rule as step 2's own
+  // Cancel — does NOT fall back to the angle-entry step.
+  cancelTypeBtn.onclick = () => { angledJoinPickerOpen = false; angledJoinPendingJamb = null; angledJoinPendingAngle = null; render(); };
+  wrap.appendChild(cancelTypeBtn);
+  wrap.appendChild(typeErrDiv);
 }
 
 // ---- Pane type vocabulary --------------------------------------------------
@@ -3814,7 +3923,9 @@ const MEETING_EDGE_LABELS = { jambL: 'left jamb', jambR: 'right jamb', head: 'he
 // already validated it against ANGLED_JOIN_ANGLE_MIN/MAX before calling this, so no re-validation
 // here — same trust-the-caller convention the rest of this file already uses between a form's own
 // confirm handler and the function it calls).
-function addAngledJoin(jamb, angleDeg) {
+// Batch 36 — `joinType` is likewise required and pre-validated by the caller (step-3 confirm
+// handler, against ANGLED_JOIN_TYPES) before this is ever called.
+function addAngledJoin(jamb, angleDeg, joinType) {
   const ev = activeElevation();
   const overallW = getOverallW();
   const m = getMembers();
@@ -3843,6 +3954,8 @@ function addAngledJoin(jamb, angleDeg) {
   // Batch 35 — system-level, not per-elevation/meetingLink (see angledJoinAngleDeg's own comment
   // above elevations/activeElevationIndex).
   angledJoinAngleDeg = angleDeg;
+  // Batch 36 — same system-level pattern as angledJoinAngleDeg directly above.
+  angledJoinType = joinType;
   setActiveElevationIndex(elevations.length - 1);
 }
 
@@ -3858,6 +3971,8 @@ function removeAngledJoin() {
   // Batch 35 — reset the join's own stored angle alongside meetingEdges/meetingLink above; an
   // easy field to forget since it lives at the top level, not on either elevation object.
   angledJoinAngleDeg = null;
+  // Batch 36 — same reset, same reasoning, for the joint type.
+  angledJoinType = null;
   // Elevation 2 is being deleted outright, so there is nothing to "save outgoing state" for if it
   // was the active one — unlike a normal setActiveElevationIndex switch, deliberately not reused
   // here, since it would read/write elevations[1] after that slot no longer exists. If elevation 1
