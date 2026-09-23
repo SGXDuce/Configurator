@@ -599,6 +599,28 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       Found, not fixed: the sashless OX-win prefill at 910mm solves O=458 exactly, but
 //       computeSlidingWinPrefillWidths then rounds a non-multiple-of-5 O to 460/520, which totals
 //       914 and fails the form's own total check — the person must type 458/518 by hand.
+// 50:   remove the broken 5mm rounding from computeSlidingWinPrefillWidths (batch 49's find).
+//       Every panel in a sliding row moves by the same delta d when O is rounded, so the entered
+//       total moves by n·d too — the rounded set only ever passes computeSlidingWinTotalWidth's
+//       own exact-match check when d is 0, meaning the rounding never actually helped: whenever it
+//       changed O, it prefilled widths the form's own validation then rejected on an unmodified
+//       Confirm. Deleted the rounding line; the prefill now uses the exact solved O/X at full
+//       precision, same "prefill only, stays editable" convention as every other prefill in this
+//       project. Confirmed the round-trip survives: an unchanged prefilled value (even a long
+//       non-integer like 913.3333333333334) goes through the input's own value -> Number(value) ->
+//       computeSlidingWinTotalWidth exactly, since a number's default string form round-trips
+//       through Number() losslessly. Grepped every Math.round in the file for other prefill
+//       rounding: none found — computeAssemblyPrefillWidths (casement/awning) and the double-hung
+//       unit-width/top-height prefills already assign their raw computed values with no rounding
+//       at all; every other Math.round call in the file is display-only text (error/info messages,
+//       "Available width here: Nmm", dimension labels), never written back into an input's value.
+//       Verified against the real page in headless Chrome (real preset picker + real Confirm
+//       button, not just the formula in isolation): sashless OX-win 910mm now prefills 458/518
+//       (was 460/520) and an unmodified Confirm passes; OXX (door) 1800mm and OXX-win 2700mm both
+//       prefill their exact non-round solved values (613.33.../673.33... and 913.33.../973.33...)
+//       and pass unmodified; ordinary OX-win 910mm framed (475/535) and OX-win 1200mm no frame
+//       (600/660) are byte-identical to before this batch. Not changed: computeSlidingWinTotalWidth,
+//       the total-check tolerance, export, reopen.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5059,10 +5081,12 @@ function isSlidingOverlapId(id, pattern) {
 // hasFrame (see the block comment above) — with no outer frame, T alone (no tuck-in) is the
 // right target, matching the original batch-17 formula exactly in that case:
 //   O = (T − 60·n_X + 60·joins [+ 40 if hasFrame]) / (n_O + n_X),  X = O + 60
-// Falls back to rounding O to the nearest 5mm only if the exact formula doesn't land on a clean
-// result (rare, per batch 17's own findings) — the existing exact-match total validation then
-// catches and prompts for whatever few-mm gap results, same as any other manually-entered
-// mismatch.
+// Prefills the exact solved value, full precision, even when it isn't a multiple of 5mm — see
+// batch 50: a prior version here rounded O to the nearest 5mm, but every panel width moves by the
+// same delta d and the entered total then moves by n·d, so the rounded set only ever passes
+// computeSlidingWinTotalWidth's own exact-match check when d happens to be 0. Whenever rounding
+// actually changed O, the form prefilled widths it then rejected on an unmodified Confirm. No
+// fallback exists any more; the exact formula is trusted as-is.
 // Batch 20: `hasFrameFlag` is now an explicit parameter (defaults to the global `hasFrame` when
 // omitted, so every pre-existing call site that relied on the implicit global read keeps working
 // unchanged) rather than only ever reading the global directly — makes the tuck-in gating
@@ -5082,8 +5106,7 @@ function computeSlidingWinPrefillWidths(pattern, totalWidthMM, hasFrameFlag, sas
   const nO = pattern.split('').filter(c => c === 'O').length;
   const nX = n - nO;
   const tuckIn = useFrame ? (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM) : 0;
-  let O = (totalWidthMM - SLIDING_OVERLAP_MM * nX + SLIDING_OVERLAP_MM * overlapJoins + tuckIn) / (nO + nX);
-  if (Math.abs(O - Math.round(O / 5) * 5) > 0.01) O = Math.round(O / 5) * 5;
+  const O = (totalWidthMM - SLIDING_OVERLAP_MM * nX + SLIDING_OVERLAP_MM * overlapJoins + tuckIn) / (nO + nX);
   const X = O + SLIDING_OVERLAP_MM;
   return pattern.split('').map(c => c === 'O' ? O : X);
 }
