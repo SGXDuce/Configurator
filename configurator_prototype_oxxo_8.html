@@ -456,6 +456,29 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       schemaVersion bumped to 4 (same precedent as batches 39/43); the 'ready' handshake's
 //       schemaVersion updated to match. No "supported-edge-pair" concept exists anywhere in this
 //       codebase or its docs to retract (confirmed via grep before this batch).
+// 45:   sashless fix: bare O panels, plus internal unframed-edge detection (Case 4). Two parts.
+//       (1) buildAssemblyPresetTree: a sashless O (type:'fixed') leaf now gets sashLeftMM =
+//       sashRightMM = 0, matching an ordinary bare fixed pane exactly — batch 42 originally
+//       stamped SASHLESS_STILE_MM on every sashless leaf's left/right regardless of type, wrong
+//       for O specifically (no real stile there). X (horizontal-slider) leaves are unaffected,
+//       still SASHLESS_STILE_MM. Double-hung confirmed unaffected by inspection —
+//       buildDoubleHungUnit never builds a type:'fixed' leaf at all.
+//       (2) buildExportElevation gains Case 4, unframedEdges-only (never added to
+//       unframedEdgeCount — a second, independently-documented divergence, distinct from batch
+//       44's sashless top/bottom exception): a sashless O leaf's edge at an internal sliding-
+//       window overlap join is unframed. Gated strictly on this leaf's own node.sashless===true &&
+//       node.type==='fixed', never the neighbour's value (sashless applies uniformly to the whole
+//       preset). Detected by reading buildSlidingWinOverlapTree's actual confirmed geometry
+//       (traced through collectExportGeometry's sashSplit branch, not guessed): sibling leaves at
+//       an overlap join genuinely OVERLAP in x by SLIDING_OVERLAP_MM, not merely touch at a
+//       near-zero gap — detection is real x-range + y-range intersection against every other leaf
+//       in the same elevation's own `leaves` list, not an EDGE_TOUCH_EPS_MM adjacency check (which
+//       would have missed it). Left/right decided by the other leaf's center position. O-O
+//       adjacency (which would make left/right ambiguous) confirmed impossible —
+//       classifySlidingWinJoin throws on that case for every pattern it handles. Only ever fires
+//       within a sashless sliding-window preset: casement/awning (plain mullion splits, no overlap
+//       joins) and double-hung (no fixed leaves) confirmed by inspection to never reach this code.
+//       Does not apply to a non-sashless fixed pane under any circumstance.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5067,11 +5090,14 @@ function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
 // Batch 42 — `sashless` (default false) stamps every leaf with SASHLESS_STILE_MM left/right and
 // zero top/bottom (glass edge-to-edge top and bottom — the two genuinely unsupported edges, per
 // AS1288's own definition of this condition) plus a `sashless: true` marker, instead of the
-// normal uniform DEFAULT_SASH_MM on all four edges. Applies to every leaf, O and X alike — an O
-// ('fixed') leaf's sash values are already dead weight for rendering/area purposes (glazedAreaM2
-// and the render loop both special-case type:'fixed' and ignore sash values entirely), so
-// stamping them sashless too is harmless and keeps the leaf-construction logic uniform rather
-// than adding a type-conditional branch here for no behavioural benefit.
+// normal uniform DEFAULT_SASH_MM on all four edges.
+// Batch 45 — corrected: a sashless O ('fixed') leaf must be zero on ALL FOUR edges, matching an
+// ordinary bare fixed pane exactly — it has no sash material at all, left/right included. Batch
+// 42 originally stamped SASHLESS_STILE_MM on every sashless leaf's left/right regardless of type,
+// which was wrong for O specifically (there is no real stile there — see the batch-45 Case-4
+// unframedEdges fix for the export-side consequence of this). SASHLESS_STILE_MM left/right is
+// still correct and unchanged for X ('horizontal-slider') leaves — that's the pane whose glass
+// genuinely stops short of the full width, at a narrow real stile.
 function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id, sashless) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   const leaves = pattern.split('').map((ch, i) => {
@@ -5080,7 +5106,8 @@ function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, p
       ? {
           kind: 'filled', type, productClass,
           sashTopMM: 0, sashBottomMM: 0,
-          sashLeftMM: SASHLESS_STILE_MM, sashRightMM: SASHLESS_STILE_MM,
+          sashLeftMM: type === 'fixed' ? 0 : SASHLESS_STILE_MM,
+          sashRightMM: type === 'fixed' ? 0 : SASHLESS_STILE_MM,
           sashless: true
         }
       : {
@@ -5734,6 +5761,51 @@ function buildExportElevation(ev, index, linkedPaneIds) {
     if (node.sashless === true) {
       unframedEdges.top = false;
       unframedEdges.bottom = false;
+    }
+
+    // Batch 45 — Case 4 (unframedEdges-only, NOT added to unframedEdgeCount — a second,
+    // independently-documented divergence between the two fields, distinct from the sashless
+    // top/bottom exception above): a sashless O ('fixed') leaf's edge at an INTERNAL overlap join
+    // (not an outer jamb/head/sill boundary — those are already correctly handled by Case 3 above)
+    // is unframed, since batch 45's own fix above means that edge now carries zero real sash
+    // material. Gated strictly on this leaf's own node.sashless === true && node.type === 'fixed'
+    // — never on the neighbour's value, since sashless applies uniformly to the whole preset, so a
+    // sashless O's neighbour is guaranteed sashless too; checking the neighbour would be redundant,
+    // not more correct.
+    //
+    // Detection: read directly off buildSlidingWinOverlapTree's own confirmed output shape, not
+    // guessed. A sliding-window overlap join is a sashSplit node whose two children's regions
+    // physically OVERLAP in x by SLIDING_OVERLAP_MM (confirmed by tracing collectExportGeometry's
+    // own sashSplit branch — e.g. fromEdge:'end' gives child0 = [x, x+remSize] and child1 =
+    // [x+w-sashSizeMM, x+w], where remSize = w-sashSizeMM+overlapMM, so child0 ends overlapMM past
+    // where child1 starts; the 'start' branch overlaps the same way in the other direction). This
+    // is NOT a near-zero touching gap the way EDGE_TOUCH_EPS_MM elsewhere in this function checks
+    // for — it's a genuine ~SLIDING_OVERLAP_MM-wide shared region, so detection here is x-RANGE
+    // overlap (this leaf's [x, x+w] genuinely intersects another leaf's [x, x+w]), combined with a
+    // real y-range overlap so a leaf merely sharing an x-position from an unrelated stacked run
+    // (e.g. across a plain flush split joining separate runs) is never mistaken for an overlap-join
+    // neighbour. Left vs right is decided by which side the other leaf's own center falls on.
+    // Only ever fires within a sashless sliding-window assembly: casement/awning build plain
+    // mullion splits with no overlap joins and no `fixed` leaves at all, and double-hung's
+    // buildDoubleHungUnit never builds a `type:'fixed'` leaf either (confirmed by direct inspection
+    // of both builders, not assumed) — so this can only ever be reached via a sashless
+    // OX/OXX/OXXO/OXXX-win preset. O-O adjacency (which would make "left or right" ambiguous) is
+    // confirmed impossible in every pattern classifySlidingWinJoin actually handles — it throws on
+    // that case rather than allow it (see classifySlidingWinJoin's own final branch), so this leaf
+    // never has more than one overlap-join neighbour per side. Does NOT apply to a non-sashless
+    // fixed pane under any circumstance — an ordinary O next to an ordinary X is genuinely framed
+    // by real sash material there, gated out entirely by the sashless === true check.
+    if (node.sashless === true && node.type === 'fixed') {
+      leaves.forEach(o => {
+        if (o === l) return;
+        const xOverlaps = o.x < l.x + l.w && o.x + o.w > l.x;
+        const yOverlaps = o.y < l.y + l.h && o.y + o.h > l.y;
+        if (!xOverlaps || !yOverlaps) return;
+        const oCenterX = o.x + o.w / 2;
+        const lCenterX = l.x + l.w / 2;
+        if (oCenterX < lCenterX) unframedEdges.left = true;
+        else if (oCenterX > lCenterX) unframedEdges.right = true;
+      });
     }
 
     // Part 5 component 1 — every non-fixed pane's own sash perimeter.
