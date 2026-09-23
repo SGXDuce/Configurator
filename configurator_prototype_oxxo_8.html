@@ -567,6 +567,38 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       sliding-window sashless checkbox already uses, batch 42 — so the prefill can never go
 //       stale relative to the checkbox's own current state). Ordinary (non-sashless) double-hung
 //       confirmed unchanged: sashless=false reduces to the exact pre-batch formula everywhere.
+// 49:   store real panel widths on sliding leaves; use them for export and reopen. Batch 48's
+//       "real O = first X's drawn width − 60" only held for the prefill defaults — the preset
+//       form validates only the total, so custom widths are legal (ordinary OX-win, 910mm,
+//       O=500/X=510 exported O=450), and unequal X widths (e.g. OXXO) were wrong too, since only
+//       the first X was read. Root cause: the remainder leaf's real width was never stored.
+//       (1) buildSlidingWinOverlapTree stamps every section node with panelWidthMM = its entered
+//       width. Done there, not in buildAssemblyPresetTree, because it's the one builder both
+//       fresh creation and the reopen (confirmAssemblyEdit) go through — so a reopen always
+//       re-stamps with the NEW widths. Shallow copies, not in-place mutation: confirmAssemblyEdit
+//       builds before its size validation, and a rejected edit must leave the live tree as-is.
+//       Sliding ids only (doors and windows) — no other builder calls this function.
+//       (2) New resolveSlidingRealWidths: stored panelWidthMM when every section has it, else
+//       batch 48's reconstruction (all-or-nothing per assembly). computeSlidingAssemblyLeafCorrections
+//       now gets its widths from it; batch 48's xMM placement rule is unchanged, just fed the
+//       stored widths.
+//       (3) getAssemblyPresetCurrentState prefills a sliding reopen from the same helper instead of
+//       drawn rect widths (which showed a tuck-in-reduced O). Confirming unchanged passes the
+//       total check and leaves the tree byte-identical.
+//       (4) Old rawState (no panelWidthMM) falls back to batch 48's reconstruction for both export
+//       and reopen; a reopen+confirm then stamps the field. No rawStateSchemaVersion bump.
+//       Small addition: makeTypeButton carries panelWidthMM across a type change (it rebuilds the
+//       leaf from scratch, which would otherwise silently drop the assembly back to the fallback).
+//       Verified by driving the real page headlessly (preset form inputs + Confirm buttons, then
+//       buildExportData) against HEAD and this batch across 11 sessions: OX 910 defaults 475/535,
+//       custom 500/510 -> 500/510 (was 450), sashless 458/518 -> 458/518, OXXO unequal
+//       610/640/700/610 -> exact (was 580/640/640/580), OXX/XOX/OXXX defaults unchanged, sliding
+//       door custom, no-frame custom. unframedEdges/unframedEdgeCount/linkedPaneId/sashless
+//       identical to batch 48 in every case. Not changed: unframedEdges (incl. Case 4), meeting-
+//       jamb detection, cross-elevation matching, on-screen drawing, double-hung.
+//       Found, not fixed: the sashless OX-win prefill at 910mm solves O=458 exactly, but
+//       computeSlidingWinPrefillWidths then rounds a non-multiple-of-5 O to 460/520, which totals
+//       914 and fails the form's own total check — the person must type 458/518 by hand.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -1106,9 +1138,17 @@ function getAssemblyPresetCurrentState(markedPath, sectionCount, pattern, id) {
     const rect = activeElevation().lastNodeRects[pathKey(fullPath)];
     widths.push(rect ? rect.w : null);
   }
+  // Batch 49 — a sliding assembly's drawn widths are NOT its entered widths (the remainder-side
+  // leaf absorbs the row's tuck-in), so reopening from them showed a shrunk O. Prefill from each
+  // section's stored panelWidthMM instead — the exact widths last confirmed, so pressing confirm
+  // unchanged reproduces the same total (computeSlidingWinTotalWidth) and the same tree. Falls
+  // back to batch 48's reconstruction for an old rawState with no stored widths.
+  const prefillWidths = winPaths
+    ? resolveSlidingRealWidths(pattern, getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id), widths)
+    : widths;
   const markedNode = getNode(markedPath);
   const mullionThickness = markedNode.kind === 'split' ? markedNode.thicknessMM : DEFAULT_SASH_MM;
-  return { widths, mullionThickness };
+  return { widths: prefillWidths, mullionThickness };
 }
 
 // Allowed child types when the region being assigned sits inside a hinged door panel.
@@ -3129,6 +3169,10 @@ function renderToolbar() {
       if (node.sashBottomLocked) newNode.sashBottomLocked = true;
       if (node.sashLeftLocked) newNode.sashLeftLocked = true;
       if (node.sashRightLocked) newNode.sashRightLocked = true;
+      // Batch 49 — carry over a sliding-assembly section's stored real panel width too: the
+      // panel's made size doesn't change with its type, and dropping it here would silently push
+      // the whole assembly back onto the batch-48 fallback reconstruction at export/reopen.
+      if (node.panelWidthMM != null) newNode.panelWidthMM = node.panelWidthMM;
       // Every call site passes an explicit hingeEdge for type:'hinged' ('left' for the door
       // and window "Hinged" buttons, 'top' for "Awning"); hingedDoorAncestor still wins when
       // set, since a hinged child of a hinged door panel is only ever the awning case.
@@ -5110,7 +5154,18 @@ function classifySlidingWinJoin(pattern, i, slideDirections) {
 // O/X letters, never the id string) — this is exactly why extending it from window-only (batch
 // 17) to also cover door ids (batch 18) needed no change to this function itself, only to the
 // isSlidingOverlapId gate deciding which ids reach it.
+// Batch 49 — stamps every section node with panelWidthMM = its entered section width (the REAL
+// panel width — the drawn geometry absorbs the row's tuck-in into whichever leaf lands on the
+// remainder side, so the tree alone can't recover it once widths differ from the prefill
+// defaults). Done HERE rather than in buildAssemblyPresetTree because this is the one builder
+// both fresh creation (buildAssemblyPresetTree) and reopen (confirmAssemblyEdit, re-wrapping the
+// existing section nodes) go through — so a reopen always re-stamps with the NEWLY entered
+// widths, never keeps the old ones. Shallow-copied, not mutated in place: confirmAssemblyEdit
+// calls this before its own size validation, and a rejected edit must leave the live tree's
+// section nodes untouched. The copy keeps every existing field (type, sash values, sashless,
+// slideDirection, children of a further-subdivided section, ...) exactly as-is.
 function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
+  leaves = leaves.map((l, i) => ({ ...l, panelWidthMM: sectionWidthsMM[i] }));
   const n = pattern.length;
   const joins = [];
   const slideDirections = computeDefaultSlideDirections(pattern);
@@ -5756,6 +5811,33 @@ function collectSlidingAssemblyRanges(node, counterRef, rangesOut) {
 // values) for every leaf belonging to a sliding assembly — callers read from this map only for the
 // specific fields that need the real panel size (xMM, widthMM, areaM2, visibleGlazedAreaM2, and
 // frameLengthMM's sash-perimeter term); every other field keeps reading l.x/l.w directly.
+//
+// [Batch 49 correction: the realX − SLIDING_OVERLAP_MM width reconstruction above only holds when
+// the entered widths equal the prefill defaults. The preset form validates only the TOTAL, so
+// custom widths are legal (ordinary OX at 910mm, O=500/X=510, exported O=450), and with unequal X
+// widths only the first X was ever read. Widths now come from each section node's stored
+// panelWidthMM (stamped by buildSlidingWinOverlapTree) via resolveSlidingRealWidths below; the
+// reconstruction survives only as its fallback for a rawState saved before batch 49. The xMM
+// placement rule is unchanged — just driven by the stored widths.]
+//
+// Batch 49 — real per-section panel widths for one sliding assembly, shared by export (above/
+// below) and the reopen prefill (getAssemblyPresetCurrentState). `sectionNodes` are the assembly's
+// own section nodes in pattern order, `drawnWidths` their drawn widths (same order). Uses each
+// node's stored panelWidthMM when EVERY section has one; otherwise (a rawState saved before batch
+// 49, which has no panelWidthMM anywhere) falls back to batch 48's reconstruction — every X is the
+// first X's drawn width, every O is that minus SLIDING_OVERLAP_MM. All-or-nothing on purpose:
+// mixing stored and reconstructed widths within one row could produce a set that no longer sums
+// to the row's real total. If even the fallback can't run (no X in the pattern, or its drawn width
+// unknown), returns drawnWidths unchanged rather than guessing.
+function resolveSlidingRealWidths(pattern, sectionNodes, drawnWidths) {
+  if (sectionNodes.every(nd => nd && typeof nd.panelWidthMM === 'number')) return sectionNodes.map(nd => nd.panelWidthMM);
+  const xIdx = pattern.indexOf('X');
+  if (xIdx < 0 || drawnWidths[xIdx] == null) return drawnWidths.slice();
+  const realX = drawnWidths[xIdx];
+  const realO = realX - SLIDING_OVERLAP_MM;
+  return pattern.split('').map(c => c === 'O' ? realO : realX);
+}
+
 function computeSlidingAssemblyLeafCorrections(leaves, ev) {
   const counterRef = { n: 0 };
   const ranges = [];
@@ -5767,10 +5849,8 @@ function computeSlidingAssemblyLeafCorrections(leaves, ev) {
     if (assemblyLeaves.length !== n) return; // defensive: should always match, never silently guess if it doesn't
     const sashless = assemblyLeaves.some(l => l.node.sashless === true);
     const tuckIn = ev.hasFrame ? (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM) : 0;
-    const xIdx = pattern.split('').findIndex(c => c === 'X');
-    const realX = assemblyLeaves[xIdx].w;
-    const realO = realX - SLIDING_OVERLAP_MM;
-    const realW = pattern.split('').map(c => c === 'O' ? realO : realX);
+    // Batch 49 — stored panelWidthMM per leaf, or batch 48's reconstruction for an old rawState.
+    const realW = resolveSlidingRealWidths(pattern, assemblyLeaves.map(l => l.node), assemblyLeaves.map(l => l.w));
     const realX0 = assemblyLeaves[0].x - tuckIn / 2;
     const realXs = [realX0];
     for (let i = 1; i < n; i++) {
