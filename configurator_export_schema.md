@@ -11,7 +11,7 @@ Originally written to resolve the open question in the project summary's §6.7 i
 - productClass is exported exactly as stored ('door' or 'window' — 'side-panel' is never set by the configurator, per §6.3/§6.4, and is not expected in this export). The sidelight/side-panel determination itself is the receiving tool's job, using the position data this schema provides.
 - Position is measured from each elevation's own main origin — the bottom-left corner of the outer frame (not the opening), same point already used on-screen for dimensioning. X increases rightward, Y increases upward (opposite of the app's internal top-down drawing coordinates — this is a real conversion the export code has to do, not a relabel). Each pane's position is its own bottom-left corner — this makes the Y value directly usable as "height above floor" once the receiving tool adds its own FFL offset, with no separate "which edge" decision needed on their end.
 - Always the true main origin, never a custom origin the person may have placed on screen for their own convenience while drawing (customOrigin is a display aid, not this export's reference point).
-- **`unframedEdges`/`unframedEdgeCount` mean structurally unsupported** — no frame member (jamb/head/sill), no sash, and no structural silicone joint holding that edge — not merely "no sash material present." This distinction matters for Case 4 (batch 45/46, below): an edge can be sash-free without being unsupported (an ordinary `O` next to an ordinary `X` has no sash of its own there, but the neighbouring `X`'s real sash genuinely frames it), and conversely a sash-free edge only becomes reportable as unframed when nothing else is holding it either. Unframed-edge count draws from three separate sources, not one:
+- **`unframedEdges`/`unframedEdgeCount` mean structurally unsupported** — no frame member (jamb/head/sill), no sash, and no structural silicone joint holding that edge — not merely "no sash material present." This distinction matters for Case 4 (batch 45/46, below): an edge can be sash-free without being unsupported (an ordinary `O` next to an ordinary `X` has no sash of its own there, but the neighbouring `X`'s real sash genuinely frames it), and conversely a sash-free edge only becomes reportable as unframed when nothing else is holding it either. **(batch 47)** `unframedEdgeCount` is the older, rougher of the two measures — it only ever summed Cases 1–3 (below) and was never updated to include Case 4 or the sashless top/bottom exception, so it does not follow the structural definition above exactly in every case. `unframedEdges` is the one that does, including both of those corrections — see its own field note below, and the "AS1288 reads `unframedEdges` only" note further down. Unframed-edge count draws from three separate sources, not one:
   - The pane's own sash*Locked flags (Case 2 — flat silicone joint to a neighbouring pane, batches 23–24).
   - Whether the pane's outer-touching edge coincides with a meeting-tagged jamb on the elevation (Case 1 — angled join, batch 26). This does not set sash*Locked on the pane at all — it's a separate mechanism, geometrically checked the same way leavesTouchingJamb() already does for the angled-join blocking rule. Missing this source would silently undercount every Case-1 pane.
   - **(Batch 30) A `type:'fixed'` pane's outer-touching edge on an elevation with `hasFrame:false`** (Case 3) — that edge has no jamb (frame is off) and no sash (fixed has none), so it's genuinely unframed even though it's neither a silicone joint nor a meeting-tagged edge. Guarded per-side against double-counting an edge that's ALSO meeting-tagged (Case 1 already counts that one). Only fires for `fixed` — every other type has its own real sash regardless of `hasFrame`. Export-only: the configurator's own live editing still allows `hasFrame:false` freely with no on-screen warning; this only affects what gets reported downstream.
@@ -30,69 +30,89 @@ Originally written to resolve the open question in the project summary's §6.7 i
   "schemaVersion": 4,
   "system": {
     "elevationCount": 2,
-    "totalFrameLengthMM": 7100,
+    "totalFrameLengthMM": 10550,
     "angledJoinAngleDeg": 135,
     "angledJoinType": "mitred",
     "elevations": [
       {
         "name": "Elevation 1",
-        "overallWidthMM": 1200,
-        "overallHeightMM": 900,
+        "overallWidthMM": 1530,
+        "overallHeightMM": 1020,
         "hasFrame": true,
-        "frameMembersMM": { "head": 60, "sill": 60, "jambL": 60, "jambR": 60 },
+        "frameMembersMM": { "head": 60, "sill": 60, "jambL": 60, "jambR": 0 },
         "meetingEdges": { "head": null, "sill": null, "jambL": null, "jambR": "meeting" },
-        "frameLengthMM": 3550,
+        "frameLengthMM": 7810,
         "panes": [
           {
-            "id": "F",
+            "id": ".L.R",
             "productClass": "window",
             "type": "fixed",
             "hingeEdge": null,
             "slideDirection": null,
             "bladeWidthMM": null,
             "bladeLengthMM": null,
-            "xMM": 0,
-            "yMM": 0,
-            "widthMM": 600,
-            "heightMM": 780,
-            "areaM2": 0.47,
-            "visibleGlazedAreaM2": 0.47,
+            "xMM": 60,
+            "yMM": 60,
+            "widthMM": 455,
+            "heightMM": 900,
+            "areaM2": 0.4095,
+            "visibleGlazedAreaM2": 0.4095,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
             "unframedEdgeCount": 0,
-            "unframedEdges": { "top": false, "bottom": false, "left": false, "right": false },
+            "unframedEdges": { "top": false, "bottom": false, "left": false, "right": true },
             "linkedPaneId": null,
             "sashless": false
           },
           {
-            "id": "F2",
+            "id": ".L.S",
             "productClass": "window",
             "type": "horizontal-slider",
             "hingeEdge": null,
             "slideDirection": "right",
             "bladeWidthMM": null,
             "bladeLengthMM": null,
-            "xMM": 600,
-            "yMM": 0,
-            "widthMM": 660,
+            "xMM": 455,
+            "yMM": 60,
+            "widthMM": 515,
             "heightMM": 900,
-            "areaM2": 0.59,
-            "visibleGlazedAreaM2": 0.57,
+            "areaM2": 0.4635,
+            "visibleGlazedAreaM2": 0.4455,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 10, "right": 10 },
-            "unframedEdgeCount": 1,
-            "unframedEdges": { "top": false, "bottom": false, "left": true, "right": false },
-            "linkedPaneId": "F",
+            "unframedEdgeCount": 0,
+            "unframedEdges": { "top": false, "bottom": false, "left": false, "right": false },
+            "linkedPaneId": null,
             "sashless": true
+          },
+          {
+            "id": ".R",
+            "productClass": "window",
+            "type": "fixed",
+            "hingeEdge": null,
+            "slideDirection": null,
+            "bladeWidthMM": null,
+            "bladeLengthMM": null,
+            "xMM": 1030,
+            "yMM": 60,
+            "widthMM": 500,
+            "heightMM": 900,
+            "areaM2": 0.45,
+            "visibleGlazedAreaM2": 0.45,
+            "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
+            "unframedEdgeCount": 1,
+            "unframedEdges": { "top": false, "bottom": false, "left": false, "right": true },
+            "linkedPaneId": "F",
+            "sashless": false
           }
         ]
       },
       {
         "name": "Elevation 2",
-        "overallWidthMM": 1000,
-        "overallHeightMM": 900,
+        "overallWidthMM": 860,
+        "overallHeightMM": 1020,
         "hasFrame": true,
-        "frameMembersMM": { "head": 60, "sill": 60, "jambL": 60, "jambR": 60 },
+        "frameMembersMM": { "head": 60, "sill": 60, "jambL": 0, "jambR": 60 },
         "meetingEdges": { "head": null, "sill": null, "jambL": "meeting", "jambR": null },
-        "frameLengthMM": 3550,
+        "frameLengthMM": 2740,
         "panes": [
           {
             "id": "F",
@@ -103,15 +123,15 @@ Originally written to resolve the open question in the project summary's §6.7 i
             "bladeWidthMM": null,
             "bladeLengthMM": null,
             "xMM": 0,
-            "yMM": 0,
-            "widthMM": 500,
+            "yMM": 60,
+            "widthMM": 800,
             "heightMM": 900,
-            "areaM2": 0.45,
-            "visibleGlazedAreaM2": 0.45,
+            "areaM2": 0.72,
+            "visibleGlazedAreaM2": 0.72,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
             "unframedEdgeCount": 1,
             "unframedEdges": { "top": false, "bottom": false, "left": true, "right": false },
-            "linkedPaneId": "F2",
+            "linkedPaneId": ".R",
             "sashless": false
           }
         ]
@@ -122,9 +142,11 @@ Originally written to resolve the open question in the project summary's §6.7 i
 }
 ```
 
-A 2-elevation (angled join) system exports both elevations under `system.elevations[]`, each with its own `meetingEdges` populated where relevant. `totalFrameLengthMM` at the system level sums both elevations' own `frameLengthMM`. `angledJoinAngleDeg`/`angledJoinType` are `null` on a single-elevation system, and every pane's `linkedPaneId` is `null` throughout in that case too — there's no meeting jamb to check. (The example's pane `"F2"` is shown as a sashless sliding-window sash purely to illustrate the field — real geometry for an actual sashless `OX-win` preset would also differ in exact widths per the batch-42 tuck-in formula; not meant as a literal worked example of that calculation.)
+**(Batch 47)** The example above is not hand-written — it's the traced output of the real export logic (`buildAssemblyPresetTree`, `buildSlidingWinOverlapTree`, `collectExportGeometry`, `computeCrossElevationLinks`, `buildExportElevation` as committed) against a concrete, numerically-simulated session, the same tracing method used to verify each batch throughout this project. Earlier versions of this example had drifted through hand edits across batches 39–46 into combinations the real code can't actually produce (a sashless slider against a meeting jamb, which `leafAllowedAgainstMeetingEdge` blocks; a `linkedPaneId` pointing within the same elevation; a slider edge flagged unframed by no real case; a fixed pane missing its Case 4 flag next to a sashless slider; pane widths exceeding the opening) — this replacement fixes all of those.
 
-Note in the example above: `id` values are scoped per elevation (each elevation labels its own panes independently, starting fresh), so `linkedPaneId` is only meaningful together with knowing which elevation it refers to — Elevation 1's pane `"F2"` (`linkedPaneId: "F"`) refers to Elevation 2's pane `"F"`, not another pane within Elevation 1 itself. With a hard cap of 2 elevations, "the other elevation" is always unambiguous — no elevation index is included in `linkedPaneId`.
+The traced session: **Elevation 1** is a sashless `OX-win` (900mm nominal row width, `hasFrame:true`, giving section widths O=455mm/X=515mm per `computeSlidingWinPrefillWidths`'s own formula with `SASHLESS_FRAME_TUCKIN_MM=6`), sitting beside a separate, ordinary `type:'fixed'` pane (500mm wide) placed against the elevation's meeting jamb (`jambR`, real+window, satisfying `leafAllowedAgainstMeetingEdge`). Pane `".L.R"` is the assembly's own O (fixed, all-zero sash per batch 45, `unframedEdges.right: true` via Case 4 — its matched overlap-join neighbour `".L.S"` is sashless). Pane `".L.S"` is the assembly's X (`sashless: true`, `SASHLESS_STILE_MM=10` left/right, all-zero top/bottom, no Case 4 — that only ever applies to `type:'fixed'` leaves). Pane `".R"` is the separate meeting-jamb O — `unframedEdgeCount: 1` and `unframedEdges.right: true` via Case 1 (touches the meeting-tagged `jambR`), linked to Elevation 2's pane `"F"`. **Elevation 2** is a single `800×900mm` fixed pane spanning its whole opening, touching its own meeting jamb (`jambL`, the opposite side, per `addAngledJoin`'s always-opposite-jambs convention) — `unframedEdgeCount: 1`, `unframedEdges.left: true` via Case 1, linked back to Elevation 1's `".R"`. Both elevations share `900mm` opening height, satisfying `computeCrossElevationLinks()`'s edge-position match (`edgeStart`/`edgeEnd` both `0`/`900`, well within `PANE_EDGE_MATCH_TOL_MM`). `frameMembersMM.jambR`/`jambL` are `0` on the respective meeting-tagged side (`getMembers()` always zeroes a meeting-tagged member, regardless of the elevation's own stored `frameMembers` value) — everywhere else the real `60mm` frame members apply. `frameLengthMM` is the real Part-5 sum: Elevation 1 = `2830` (X's own sash perimeter, `2×(515+900)`) + `900` (the one real 60mm mullion between the assembly and `".R"`, a v-axis member whose length is the region height it divides) + `4080` (outer frame: head+sill each contribute `overallWidthMM` (`1530`), jambL contributes `overallHeightMM` (`1020`), jambR contributes `0` since it's meeting-tagged — `1530+1530+1020+0=4080`) = `7810`. Elevation 2 = outer frame only (single fixed pane, no sash perimeter, no internal mullion): head+sill each contribute `overallWidthMM` (`860`), jambR contributes `overallHeightMM` (`1020`), jambL contributes `0` (meeting-tagged) — `860+860+0+1020=2740`. `totalFrameLengthMM` is their sum, `10550`.
+
+Note in the example above: `id` values are scoped per elevation (each elevation labels its own panes independently, starting fresh, using the real dotted path convention `collectExportGeometry` builds — e.g. `".L.R"` is "root's left child, then that child's own right/accumulated side"), so `linkedPaneId` is only meaningful together with knowing which elevation it refers to — Elevation 1's pane `".R"` (`linkedPaneId: "F"`) refers to Elevation 2's pane `"F"`, not another pane within Elevation 1 itself; Elevation 2's pane `"F"` (`linkedPaneId: ".R"`) refers back the other way. With a hard cap of 2 elevations, "the other elevation" is always unambiguous — no elevation index is included in `linkedPaneId`.
 
 ## Field notes
 

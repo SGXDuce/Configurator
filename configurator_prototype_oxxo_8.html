@@ -508,6 +508,20 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       itself is unchanged, only which leaves are allowed to carry the flag.
 //       No schemaVersion bump (same precedent as batch 45 — corrects what fills the existing v4
 //       shape, doesn't change the shape itself).
+// 47:   docs only — replaced configurator_export_schema.md's JSON example with a real, traced
+//       export. No code change in this file. The old example (hand-edited across batches 39–46)
+//       had drifted into combinations the real code can't produce: a sashless slider against a
+//       meeting jamb (blocked by leafAllowedAgainstMeetingEdge), a linkedPaneId pointing within
+//       the same elevation, a slider edge flagged unframed by no real case, a fixed pane missing
+//       its Case 4 flag next to a sashless slider, and pane widths exceeding the opening. Replaced
+//       with the output of a real, numerically-simulated session — a sashless OX-win (frame on)
+//       beside a separate ordinary fixed pane at the meeting jamb on Elevation 1, linked to a
+//       single fixed pane at the meeting jamb on Elevation 2 — traced against the actual committed
+//       formulas (buildAssemblyPresetTree/buildSlidingWinOverlapTree/collectExportGeometry/
+//       computeCrossElevationLinks/buildExportElevation), same method used to verify every prior
+//       batch. Also corrected the core-principles line: unframedEdgeCount is the older, rougher
+//       measure (never updated for Case 4 or the sashless exception); only unframedEdges follows
+//       the structural-support definition exactly.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
