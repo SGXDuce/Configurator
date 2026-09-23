@@ -621,6 +621,108 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       and pass unmodified; ordinary OX-win 910mm framed (475/535) and OX-win 1200mm no frame
 //       (600/660) are byte-identical to before this batch. Not changed: computeSlidingWinTotalWidth,
 //       the total-check tolerance, export, reopen.
+// 51:   correct real widths for subdivided sections in sliding assemblies; move stored widths
+//       onto the assembly marker. A sliding section can be split further (transom or vertical
+//       bar, nested any depth) — users do this regularly. Batch 49's per-section panelWidthMM
+//       stamp couldn't survive that: confirmSplit replaces the section node via cloneForSplit,
+//       which carries neither panelWidthMM nor sashless, so (a) the leaf-count the old
+//       computeSlidingAssemblyLeafCorrections relied on no longer matched the pattern length and
+//       it silently bailed with no correction and no warning (the whole row exported drawn,
+//       tuck-in-absorbed widths), and (b) reopen found no panelWidthMM and fell back to batch
+//       48's reconstruction, wrong for custom widths.
+//       Person-confirmed construction assumption: a subdivided sliding section is still ONE
+//       physical panel — one sash that slides or stays fixed as a unit, with a glazing bar or
+//       transom inside it. The hidden strips at a panel's own perimeter (frame tuck-in, sliding
+//       overlap behind a neighbour) belong to whichever sub-pane sits on that perimeter edge.
+//       Stated interpretation, person told the consequence: bar positions inside a panel are
+//       taken as true positions in the opening, AS DRAWN — never re-measured along the panel. An
+//       X panel split at its own drawn centre therefore exports UNEQUAL sub-panes (the drawing's
+//       existing tuck-in/overlap absorption showing through one side) — not corrected for.
+//       (1) Storage moved from a per-section node stamp to the assembly MARKER itself:
+//       assemblyPresetRef.panelWidthsMM, the entered section widths in pattern order, sliding-
+//       overlap ids only. buildSlidingWinOverlapTree reverted to its pre-batch-49 body (no
+//       stamping at all); makeTypeButton's batch-49 panelWidthMM carry-over removed.
+//       confirmAssemblyPreset stamps panelWidthsMM on the fresh marker at creation.
+//       confirmAssemblyEdit builds a NEW marker object ({...markedNode.assemblyPresetRef,
+//       panelWidthsMM: sectionWidths}) rather than reusing the live one — a rejected edit (the
+//       size-validation check runs AFTER this) must leave the live tree's own marker untouched.
+//       Split, Clear, and type change never touch the marker node, so a subdivided section's
+//       real width survives all three automatically.
+//       (2) resolveSlidingRealWidths rewritten to take the assemblyPresetRef directly: uses
+//       panelWidthsMM when it's an array of pattern.length numbers, else falls back to batch
+//       48's reconstruction, unchanged. No rawStateSchemaVersion bump — an old rawState simply
+//       has no panelWidthsMM on its marker and takes the existing fallback path.
+//       (3) Export now works per SECTION, not per leaf. collectExportGeometry gained two
+//       optional trailing params — `path` (child-index array, same convention as
+//       getNode/setNode) and `nodeRectsOut` (pathKey(path) -> {x,y,w,h} for EVERY node visited,
+//       including empty ones) — every pre-existing call site (neither param passed) is
+//       unaffected; every leaf record also now carries its own `path`. Checked first that
+//       nothing serializes leavesOut wholesale: the exported `panes` array is built by picking
+//       named fields off each leaf record one at a time, `path` is never among them, so this
+//       adds no field to the exported JSON. collectSlidingAssemblyRanges rewritten to collect
+//       each sliding assembly's own marked PATH and assemblyPresetRef (a leaf count can no
+//       longer identify sections once one may be a subdivided subtree) instead of a leaf-index
+//       range. computeSlidingAssemblyLeafCorrections rewritten: for each assembly, each
+//       section's drawn rect comes from the node-rect map at markedPath + the relevant
+//       computeSlidingWinSectionPaths(pattern)[i] (works whether the section is a leaf or a
+//       split); real per-section x/width is batch 49's rule unchanged, just driven by section
+//       rects instead of leaf rects; per section, leftStrip = drawnX − realX, rightStrip =
+//       (realX+realW) − (drawnX+drawnW), never clamped (either can be negative); every exported
+//       leaf whose path falls under a section's path gets corrected by that section's own
+//       strips, gated on whether the leaf touches the section's own drawn left/right edge
+//       (EDGE_TOUCH_EPS_MM) — a leaf touching neither (fully interior) is left exactly as drawn,
+//       one touching both (unsplit, or a transom split, whose two sub-panes both still span the
+//       section's own full width) gets both strips, matching the construction assumption above.
+//       Removed the old leaf-count bail-out entirely — a section path that doesn't resolve in
+//       the node-rect map now throws a clear Error (classifySlidingWinJoin's own "flag rather
+//       than guess" convention), never silently skips. This should never actually fire (the
+//       section paths are the exact paths buildSlidingWinOverlapTree's own construction
+//       produces, cross-checked since batch 17/18); nothing in this file wraps buildExportData
+//       in a try/catch, so it would surface as an uncaught exception in the Export/Done button's
+//       own click handler — no different from any other uncaught throw already possible here
+//       (e.g. classifySlidingWinJoin's own throws), not a new gap. The sashless tuck-in check is
+//       unchanged (still keys off the assembly's own leaves) — a subdivided sashless panel is
+//       known-wrong until a future batch.
+//       (4) getAssemblyPresetCurrentState passes the marker (not per-section nodes) to
+//       resolveSlidingRealWidths; its drawn-width fallback still reads section rects from
+//       lastNodeRects exactly as before.
+//       (5) Investigated, not fixed: can an on-drawing edit change a sliding assembly's section
+//       widths WITHOUT going through confirmAssemblyEdit? Yes, two real paths, both leaving
+//       panelWidthsMM stale. (a) Every plain `split` bar (a manually-added vertical/horizontal
+//       bar inside a subdivided section, or the OXXO-shaped assembly's own internal flush-join
+//       zero-thickness split) gets a double-click-editable on-drawing dimension label
+//       (buildDimensionLabels' vRows/hRows loop) that calls setNode(b.path, {...node,
+//       posMM:...}) directly — no confirmAssemblyEdit involved. (b) The overall width/height
+//       double-click labels (and the header's own Overall width/height inputs) validate via
+//       validateTreeAgainstSize and, if valid, only update the DOM input/global value and
+//       render() — the sliding tree is never rebuilt, so a sashSplit's fixed sashSizeMM absorbs
+//       none of the size change; the "remainder" leaf(s) silently grow/shrink to take up all of
+//       it. Empirically confirmed for (b): a fresh OX door (O=500/X=510) grown by +100mm overall
+//       leaves panelWidthsMM at [500,510] while the drawn O leaf grows from 460mm to 560mm — the
+//       marker now understates the real total by exactly the grown amount. Not a risk for
+//       sashSplit's own sashSizeMM specifically — there is no double-click editing wired for it
+//       at all (only plain-split `bars` get dimension labels; the sashSplit-tracking
+//       `overlapsOut` array is collected by walk() but never passed to buildDimensionLabels).
+//       Verified against the real page in headless Chrome (real preset form, real split UI, real
+//       Confirm/Edit-assembly-widths/Clear/re-type buttons): ordinary OX door 910mm framed,
+//       O=500/X=510 unsplit exports 500/510 at xMM 40/480, byte-identical to batch 49/50; O split
+//       by a transom exports both panes at width 500, x=40; O split vertically with a 40mm bar at
+//       its own drawn centre exports panes at x=40/w=230 and x=310/w=230 (sums with the bar to
+//       500); X split the same way exports x=480/w=215 and x=735/w=255 (sums with the bar to
+//       510) — both hand-traced against the task's own worked example before running, exact
+//       match; nesting (O split vertically, then its left pane split by a transom) gives both
+//       resulting panes x=40/w=230; OXXO with unequal widths (610/640/700/610), one middle X
+//       split vertically, gives sub-panes that sum with the 40mm bar to exactly that X's own
+//       entered width (640); reopening the O-split-by-transom case shows prefill [500,510],
+//       confirming unchanged leaves the export byte-identical; reopening the vertically-split-O
+//       case with changed widths (O 500->520, X 510->490, same total) is accepted and the split
+//       panes plus bar sum to the new 520; splitting a section, clearing it, and re-typing it
+//       still exports the stored widths; a marker with panelWidthsMM stripped (simulating a
+//       pre-batch-49/51 rawState) falls back to batch 48's reconstruction with no crash; the
+//       sashless OX-win 910mm case from batch 50 (unsplit) still prefills/exports 458/518 with
+//       Case 4's unframedEdges and the sashless flag intact. Not changed: unframedEdges
+//       (including Case 4), meeting-jamb detection, cross-elevation matching, on-screen drawing,
+//       double-hung.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -1161,14 +1263,18 @@ function getAssemblyPresetCurrentState(markedPath, sectionCount, pattern, id) {
     widths.push(rect ? rect.w : null);
   }
   // Batch 49 — a sliding assembly's drawn widths are NOT its entered widths (the remainder-side
-  // leaf absorbs the row's tuck-in), so reopening from them showed a shrunk O. Prefill from each
-  // section's stored panelWidthMM instead — the exact widths last confirmed, so pressing confirm
-  // unchanged reproduces the same total (computeSlidingWinTotalWidth) and the same tree. Falls
-  // back to batch 48's reconstruction for an old rawState with no stored widths.
-  const prefillWidths = winPaths
-    ? resolveSlidingRealWidths(pattern, getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id), widths)
-    : widths;
+  // leaf absorbs the row's tuck-in), so reopening from them showed a shrunk O. Prefill from the
+  // marker's own stored panelWidthsMM instead — the exact widths last confirmed, so pressing
+  // confirm unchanged reproduces the same total (computeSlidingWinTotalWidth) and the same tree.
+  // Batch 51 — storage moved from a per-section panelWidthMM stamp (which a subdivided section
+  // can't carry — splitting replaces the section node) to the marker itself
+  // (assemblyPresetRef.panelWidthsMM); resolveSlidingRealWidths now reads the marker, with the
+  // drawn `widths` computed above still supplying batch 48's reconstruction fallback for an old
+  // rawState that has neither.
   const markedNode = getNode(markedPath);
+  const prefillWidths = winPaths
+    ? resolveSlidingRealWidths(markedNode.assemblyPresetRef, widths)
+    : widths;
   const mullionThickness = markedNode.kind === 'split' ? markedNode.thicknessMM : DEFAULT_SASH_MM;
   return { widths: prefillWidths, mullionThickness };
 }
@@ -3191,10 +3297,6 @@ function renderToolbar() {
       if (node.sashBottomLocked) newNode.sashBottomLocked = true;
       if (node.sashLeftLocked) newNode.sashLeftLocked = true;
       if (node.sashRightLocked) newNode.sashRightLocked = true;
-      // Batch 49 — carry over a sliding-assembly section's stored real panel width too: the
-      // panel's made size doesn't change with its type, and dropping it here would silently push
-      // the whole assembly back onto the batch-48 fallback reconstruction at export/reopen.
-      if (node.panelWidthMM != null) newNode.panelWidthMM = node.panelWidthMM;
       // Every call site passes an explicit hingeEdge for type:'hinged' ('left' for the door
       // and window "Hinged" buttons, 'top' for "Awning"); hingedDoorAncestor still wins when
       // set, since a hinged child of a hinged door panel is only ever the awning case.
@@ -4086,7 +4188,15 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
   // detectPresetFamily. Batch 17: the marker NOW also stores `id` — 'pattern' alone can't tell
   // a -win preset apart from its plain sliding-door sibling ('OX' vs 'OX-win' share a pattern),
   // and a later "Edit assembly widths" reopen needs to know which tree-building rule applies.
-  if (isMarkableTree) tree.assemblyPresetRef = { pattern, productClass, id };
+  // Batch 51 — a sliding-overlap marker also stores `panelWidthsMM`, the entered section widths
+  // in pattern order — the real per-panel widths, now kept on the marker rather than stamped
+  // onto section nodes (batch 49's approach), since a subdivided section can't carry a per-node
+  // stamp at all (splitting replaces the node via cloneForSplit, which drops it). Not stored for
+  // non-sliding families — nothing reads it there.
+  if (isMarkableTree) {
+    tree.assemblyPresetRef = { pattern, productClass, id };
+    if (isSlidingOverlapId(id, pattern)) tree.assemblyPresetRef.panelWidthsMM = sectionWidths.slice();
+  }
   setNode(ev.pendingSplit.path, tree);
   ev.pendingSplit = null;
   ev.selected = null;
@@ -4239,7 +4349,14 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
   }
   const markedNode = getNode(markedPath);
   if (markedNode.hingedDoorRef) node.hingedDoorRef = markedNode.hingedDoorRef;
-  node.assemblyPresetRef = markedNode.assemblyPresetRef;
+  // Batch 51 — a NEW marker object, never the existing one: a rejected edit (the size-validation
+  // check just below can still fail after this point) must leave the LIVE tree's own marker
+  // untouched, and this function's own `node` isn't committed via setNode until validation passes.
+  // Sliding-overlap ids get freshly-entered `panelWidthsMM` on the new marker, replacing whatever
+  // was stored before — every other family's marker is carried over unchanged (spread only).
+  const newAssemblyPresetRef = { ...markedNode.assemblyPresetRef };
+  if (isSlidingOverlapId(id, pattern)) newAssemblyPresetRef.panelWidthsMM = sectionWidths.slice();
+  node.assemblyPresetRef = newAssemblyPresetRef;
 
   // Validate every nested descendant — including anything subdivided further inside a section
   // after the original preset was placed — still fits at >= MIN_PANE_MM under the new widths.
@@ -5177,18 +5294,13 @@ function classifySlidingWinJoin(pattern, i, slideDirections) {
 // O/X letters, never the id string) — this is exactly why extending it from window-only (batch
 // 17) to also cover door ids (batch 18) needed no change to this function itself, only to the
 // isSlidingOverlapId gate deciding which ids reach it.
-// Batch 49 — stamps every section node with panelWidthMM = its entered section width (the REAL
-// panel width — the drawn geometry absorbs the row's tuck-in into whichever leaf lands on the
-// remainder side, so the tree alone can't recover it once widths differ from the prefill
-// defaults). Done HERE rather than in buildAssemblyPresetTree because this is the one builder
-// both fresh creation (buildAssemblyPresetTree) and reopen (confirmAssemblyEdit, re-wrapping the
-// existing section nodes) go through — so a reopen always re-stamps with the NEWLY entered
-// widths, never keeps the old ones. Shallow-copied, not mutated in place: confirmAssemblyEdit
-// calls this before its own size validation, and a rejected edit must leave the live tree's
-// section nodes untouched. The copy keeps every existing field (type, sash values, sashless,
-// slideDirection, children of a further-subdivided section, ...) exactly as-is.
+// Batch 51 — no longer stamps panelWidthMM on section nodes (batch 49's approach). A subdivided
+// section's real width can't be recovered from a per-leaf stamp at all (splitting replaces the
+// section node via cloneForSplit, which carries no such field, and touches nothing this function
+// sees) — storage moved to the assembly marker itself (assemblyPresetRef.panelWidthsMM, stamped
+// by confirmAssemblyPreset/confirmAssemblyEdit). This function is back to its pre-batch-49 body:
+// purely rearranges the given leaves by width, no stamping of any kind.
 function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
-  leaves = leaves.map((l, i) => ({ ...l, panelWidthMM: sectionWidthsMM[i] }));
   const n = pattern.length;
   const joins = [];
   const slideDirections = computeDefaultSlideDirections(pattern);
@@ -5712,29 +5824,45 @@ window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer
 // what export needs: filled leaves (empty leaves skipped — export only reports assigned panes)
 // and real plain-split members (thicknessMM > 0, not a silicone joint, not a sashSplit — a
 // sashSplit's overlap has no separate physical member, see frameLengthMM below).
-function collectExportGeometry(node, x, y, w, h, labelParts, leavesOut, membersOut) {
+// Batch 51 — two optional trailing params, both defaulted so every pre-existing call site (which
+// passes neither) keeps working byte-for-byte unchanged: `path` (the node's own address as an
+// array of child indices, same convention as getNode/setNode/assemblyPresetRef section paths —
+// root is []) and `nodeRectsOut` (a pathKey(path) -> {x,y,w,h} map, populated for EVERY node
+// visited, filled or empty or a split/sashSplit itself — mirrors walk()'s own nodeRectsOut, which
+// already does this for on-screen rendering; this is the export-time twin of it). Every leaf
+// record also now carries its own `path` — needed so a sliding assembly's real-panel-size
+// correction (below) can identify which exported leaves fall under which SECTION of the
+// assembly, now that a section can be a subdivided subtree, not just one leaf (batch 51). Neither
+// addition changes leavesOut/membersOut's existing content or order in any way — confirmed: `path`
+// is a new field on an already-pushed leaf record, not a new leaf, and nodeRectsOut is an entirely
+// separate out-param nothing existing reads. `panes` (the actual exported JSON) is still built by
+// picking named fields off each leaf record one at a time (see buildExportElevation below) — `path`
+// is never among them, so this change adds no new field to the exported JSON itself.
+function collectExportGeometry(node, x, y, w, h, labelParts, leavesOut, membersOut, path, nodeRectsOut) {
+  path = path || [];
+  if (nodeRectsOut) nodeRectsOut[pathKey(path)] = { x, y, w, h };
   if (node.kind === 'empty') return;
   if (node.kind === 'filled') {
-    leavesOut.push({ x, y, w, h, node, label: labelParts.join('') || 'F' });
+    leavesOut.push({ x, y, w, h, node, label: labelParts.join('') || 'F', path });
     return;
   }
   if (node.kind === 'sashSplit') {
     const remSize = Math.max(0, (node.axis === 'v' ? w : h) - node.sashSizeMM + node.overlapMM);
     if (node.axis === 'v') {
       if (node.fromEdge === 'start') {
-        collectExportGeometry(node.children[0], x, y, node.sashSizeMM, h, [...labelParts, '.S'], leavesOut, membersOut);
-        collectExportGeometry(node.children[1], x + node.sashSizeMM - node.overlapMM, y, remSize, h, [...labelParts, '.R'], leavesOut, membersOut);
+        collectExportGeometry(node.children[0], x, y, node.sashSizeMM, h, [...labelParts, '.S'], leavesOut, membersOut, path.concat(0), nodeRectsOut);
+        collectExportGeometry(node.children[1], x + node.sashSizeMM - node.overlapMM, y, remSize, h, [...labelParts, '.R'], leavesOut, membersOut, path.concat(1), nodeRectsOut);
       } else {
-        collectExportGeometry(node.children[0], x, y, remSize, h, [...labelParts, '.R'], leavesOut, membersOut);
-        collectExportGeometry(node.children[1], x + w - node.sashSizeMM, y, node.sashSizeMM, h, [...labelParts, '.S'], leavesOut, membersOut);
+        collectExportGeometry(node.children[0], x, y, remSize, h, [...labelParts, '.R'], leavesOut, membersOut, path.concat(0), nodeRectsOut);
+        collectExportGeometry(node.children[1], x + w - node.sashSizeMM, y, node.sashSizeMM, h, [...labelParts, '.S'], leavesOut, membersOut, path.concat(1), nodeRectsOut);
       }
     } else {
       if (node.fromEdge === 'start') {
-        collectExportGeometry(node.children[0], x, y, w, node.sashSizeMM, [...labelParts, '.S'], leavesOut, membersOut);
-        collectExportGeometry(node.children[1], x, y + node.sashSizeMM - node.overlapMM, w, remSize, [...labelParts, '.R'], leavesOut, membersOut);
+        collectExportGeometry(node.children[0], x, y, w, node.sashSizeMM, [...labelParts, '.S'], leavesOut, membersOut, path.concat(0), nodeRectsOut);
+        collectExportGeometry(node.children[1], x, y + node.sashSizeMM - node.overlapMM, w, remSize, [...labelParts, '.R'], leavesOut, membersOut, path.concat(1), nodeRectsOut);
       } else {
-        collectExportGeometry(node.children[0], x, y, w, remSize, [...labelParts, '.R'], leavesOut, membersOut);
-        collectExportGeometry(node.children[1], x, y + h - node.sashSizeMM, w, node.sashSizeMM, [...labelParts, '.S'], leavesOut, membersOut);
+        collectExportGeometry(node.children[0], x, y, w, remSize, [...labelParts, '.R'], leavesOut, membersOut, path.concat(0), nodeRectsOut);
+        collectExportGeometry(node.children[1], x, y + h - node.sashSizeMM, w, node.sashSizeMM, [...labelParts, '.S'], leavesOut, membersOut, path.concat(1), nodeRectsOut);
       }
     }
     return;
@@ -5747,41 +5875,45 @@ function collectExportGeometry(node, x, y, w, h, labelParts, leavesOut, membersO
   if (node.axis === 'v') {
     const leftW = Math.max(0, node.posMM - node.thicknessMM / 2);
     const rightW = Math.max(0, w - node.posMM - node.thicknessMM / 2);
-    collectExportGeometry(node.children[0], x, y, leftW, h, [...labelParts, '.L'], leavesOut, membersOut);
-    collectExportGeometry(node.children[1], x + leftW + node.thicknessMM, y, rightW, h, [...labelParts, '.R'], leavesOut, membersOut);
+    collectExportGeometry(node.children[0], x, y, leftW, h, [...labelParts, '.L'], leavesOut, membersOut, path.concat(0), nodeRectsOut);
+    collectExportGeometry(node.children[1], x + leftW + node.thicknessMM, y, rightW, h, [...labelParts, '.R'], leavesOut, membersOut, path.concat(1), nodeRectsOut);
   } else {
     const topH = Math.max(0, node.posMM - node.thicknessMM / 2);
     const botH = Math.max(0, h - node.posMM - node.thicknessMM / 2);
-    collectExportGeometry(node.children[0], x, y, w, topH, [...labelParts, '.T'], leavesOut, membersOut);
-    collectExportGeometry(node.children[1], x, y + topH + node.thicknessMM, w, botH, [...labelParts, '.B'], leavesOut, membersOut);
+    collectExportGeometry(node.children[0], x, y, w, topH, [...labelParts, '.T'], leavesOut, membersOut, path.concat(0), nodeRectsOut);
+    collectExportGeometry(node.children[1], x, y + topH + node.thicknessMM, w, botH, [...labelParts, '.B'], leavesOut, membersOut, path.concat(1), nodeRectsOut);
   }
 }
 
-// Batch 48 — sliding-window assembly leaf ranges, for the real-panel-size export correction
-// below. Walks the tree in EXACT lockstep with collectExportGeometry's own traversal order
-// (empty -> skip, filled -> count one leaf, sashSplit -> children[0] then children[1], plain
-// split -> children[0] then children[1] — mirrored on purpose, not reimplemented independently),
-// so the leaf-count reached at any point in this walk equals the index that leaf will land at in
-// collectExportGeometry's own leavesOut array. Deliberately does NOT touch or duplicate
-// collectExportGeometry itself (that function's own geometry math is untouched by this batch —
-// only used here to find WHICH leaves belong to a sliding-window assembly, and their pattern).
-// Returns an array of { pattern, startIdx, endIdx } — one entry per assemblyPresetRef-marked
-// sliding-window node found (isSlidingOverlapId(id, pattern)), inclusive leaf-array index range.
-// Casement/awning/double-hung presets are marked too (assemblyPresetRef is stamped on every
-// markable family, not just sliding) but are excluded here by the isSlidingOverlapId check — this
-// batch's fix is sliding-window (and sliding-door, per the same mechanism) only.
-function collectSlidingAssemblyRanges(node, counterRef, rangesOut) {
-  if (node.kind === 'empty') return;
-  if (node.kind === 'filled') { counterRef.n++; return; }
-  // sashSplit and plain split both just recurse into their two children in order — fromEdge only
-  // changes GEOMETRY (handled entirely by collectExportGeometry, untouched here), never which
-  // child is visited first, so both kinds share this same walk with no branch needed on fromEdge.
+// Batch 51 — path-prefix test, same convention as getNode/setNode/assemblyPresetRef section
+// paths (array of child indices, root []). Used below to tell which exported leaves fall inside
+// which section of a sliding assembly, now that a section can be a subdivided subtree rather than
+// always exactly one leaf.
+function pathStartsWith(path, prefix) {
+  if (path.length < prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) if (path[i] !== prefix[i]) return false;
+  return true;
+}
+
+// Batch 48 — finds every sliding (door or window) assembly in the tree, for the real-panel-size
+// export correction below. Batch 51 rewrite: returns each marked node's own PATH and
+// assemblyPresetRef, not a leaf-index range — a leaf count can no longer identify a sliding
+// assembly's sections once a section may itself be a subdivided subtree (a split section has more
+// leaves under it than the pattern has letters, so the old lockstep leaf-counting walk silently
+// broke: `assemblyLeaves.length !== n` bailed out with no correction and no warning, batch 49's
+// own bug being fixed here). Section boundaries are now found by path (computeSlidingWinSectionPaths
+// relative to the marked path), not by counting — see computeSlidingAssemblyLeafCorrections below.
+// Continues recursing into BOTH children after finding a match (never returns early) — a preset can
+// be built inside a section of another preset (batch 12's own finding), so a nested marker must
+// still be found. Casement/awning/double-hung presets are marked too (assemblyPresetRef is stamped
+// on every markable family) but excluded here by the isSlidingOverlapId check — unchanged from
+// batch 48, this mechanism is sliding-window/sliding-door only.
+function collectSlidingAssemblyRanges(node, path, rangesOut) {
+  if (node.kind === 'empty' || node.kind === 'filled') return;
   const ref = node.assemblyPresetRef;
-  const isSliding = ref && isSlidingOverlapId(ref.id, ref.pattern);
-  const startIdx = counterRef.n;
-  collectSlidingAssemblyRanges(node.children[0], counterRef, rangesOut);
-  collectSlidingAssemblyRanges(node.children[1], counterRef, rangesOut);
-  if (isSliding) rangesOut.push({ pattern: ref.pattern, startIdx, endIdx: counterRef.n - 1 });
+  if (ref && isSlidingOverlapId(ref.id, ref.pattern)) rangesOut.push({ path, ref });
+  collectSlidingAssemblyRanges(node.children[0], path.concat(0), rangesOut);
+  collectSlidingAssemblyRanges(node.children[1], path.concat(1), rangesOut);
 }
 
 // Batch 48 — corrects a sliding-window (or sliding-door) assembly's own leaves in-place so their
@@ -5791,69 +5923,83 @@ function collectSlidingAssemblyRanges(node, counterRef, rangesOut) {
 // configuration it's in — glazedAreaM2/visibleGlazedAreaM2 already compute "panel area minus own
 // rails/stiles" correctly; the bug was purely in the panel SIZE fed into that calculation.
 //
-// Root cause, traced (not assumed) against the actual committed formulas: computeSlidingWinPrefillWidths
-// solves ONE scalar real O width and ONE scalar real X width (X = O + SLIDING_OVERLAP_MM) for the
-// WHOLE pattern, uniformly — every O leaf shares the same real width, every X leaf shares the
-// same real width, regardless of pattern length, run count, or position. buildSlidingWinOverlapTree
-// then builds the tree using these AS THE SASH SIDE'S OWN sashSizeMM (an absolute value baked in
-// at creation, never recomputed against available space) — so every X leaf's DRAWN width already
-// exactly equals its real width, confirmed by direct trace. The row's own tuck-in (FRAME_TUCKIN_MM
-// or SASHLESS_FRAME_TUCKIN_MM, flat per row when hasFrame, split conceptually as tuckIn/2 at each
-// of the row's own two outer edges — batch 18's own "leftmost panel's left edge and the rightmost
-// panel's right edge, regardless of panel count" rule, applied unconditionally whenever hasFrame is
-// true, REGARDLESS of whether this assembly's own row actually touches a true elevation jamb — this
-// mirrors computeSlidingWinPrefillWidths' own unconditional gating exactly, not a new assumption)
-// shows up ONLY in whichever leaf(s) end up on the REMAINDER (non-sash) side of the tree's own
-// nested folds when drawn at the true opening width, traced numerically across every confirmed
-// pattern (OX, OXX, XOX, OXXO, OXXX, including a flush-joined multi-run case) — no simple
-// per-pattern shortcut generalizes (OXXO in particular puts the WHOLE tuck-in shortfall on one
-// single leaf, not split evenly across both O's), so this does not try to re-derive WHICH leaf
-// absorbed it. Instead: since every O's real width and every X's real width are each a single
-// shared scalar for the whole pattern, and X's drawn width already IS that scalar, the real O
-// width for the whole assembly is simply (any sibling X's drawn width) − SLIDING_OVERLAP_MM —
-// numerically verified against all 5 patterns' actual drawn output, exact match every time.
+// Batch 51 — person-confirmed construction assumption: a subdivided sliding section (split further
+// by a transom or a vertical bar, which users do regularly) is still ONE physical panel — one sash
+// that slides or stays fixed as a unit, with a glazing bar or transom inside it. The hidden strips
+// at a panel's own perimeter (frame tuck-in on an outer edge, the sliding overlap behind a
+// neighbour) belong to whichever sub-pane sits on that perimeter edge, not to the section as a
+// whole undifferentiated. Stated interpretation, person told the consequence: bar positions inside
+// a panel are true positions in the opening, AS DRAWN — never re-measured along the panel. So an X
+// panel split at its own drawn centre exports UNEQUAL panes either side of the bar (the drawing's
+// existing tuck-in/overlap absorption showing through one side) — this is intentional, not
+// corrected for.
 //
-// xMM: leaf 0 (the row's own leftmost, drawn-order) shifts left by tuckIn/2 from its drawn x (the
-// real panel starts tuckIn/2 further into the row's own left end, whether or not that end
-// happens to touch a true elevation jamb — same unconditional-per-row assumption as the width
-// fix). Every subsequent leaf is then placed left-to-right from the corrected leaf 0, using each
-// leaf's own corrected real width and the physical adjacency to its left neighbour — an overlap
-// join subtracts SLIDING_OVERLAP_MM (leaves physically overlap by that much), a flush join
-// subtracts nothing (leaves physically abut) — determined directly from the DRAWN geometry itself
-// (leaves[i].x < leaves[i-1].x+leaves[i-1].w means that pair's join was an overlap; equal means
-// flush), not re-derived from classifySlidingWinJoin, so this needs no access to slideDirections
-// or any other UI-only state. Verified numerically: the rightmost leaf's own corrected right edge
-// always lands at exactly openingW + tuckIn/2 past the true opening boundary, for every pattern
-// traced — confirming the whole row's own two ends are symmetric even when the WIDTH shortfall
-// wasn't.
+// Algorithm, now per SECTION rather than per leaf (a section is one pattern letter's worth of the
+// row — one leaf if never subdivided, a whole subtree if it has been):
+//  1. Each section's own drawn rect comes from the node-rect map collectExportGeometry now builds
+//     (works identically whether the section is a leaf or a split — the map records every node).
+//  2. Real per-section widths: resolveSlidingRealWidths(ref, drawnSectionWidths) — batch 49's
+//     stored-vs-reconstructed-fallback rule, unchanged in kind, just now reading the ASSEMBLY
+//     MARKER's own panelWidthsMM (batch 51 moved storage there — see the marker-stamping code in
+//     confirmAssemblyPreset/confirmAssemblyEdit) instead of a per-section node stamp, since a
+//     subdivided section's own node (now a split, not a leaf) has nowhere to carry a per-node
+//     stamp at all.
+//  3. Real per-section x: leaf 0's rule from batch 48 is unchanged — section 0 starts tuckIn/2 left
+//     of its own drawn x; each next section is placed from its left neighbour's real x + real
+//     width, minus SLIDING_OVERLAP_MM at an overlap join (drawn sections don't touch) or 0 at a
+//     flush join (drawn sections do touch) — read directly off the SECTIONS' own drawn rects now,
+//     not off individual leaves.
+//  4. Per section, the two hidden strips this section's real rect differs from its drawn rect by:
+//     leftStrip = drawnX − realX; rightStrip = (realX+realW) − (drawnX+drawnW). Either can be
+//     negative (the X side of an OX section is realX BEFORE drawnX and narrower drawn than real —
+//     no clamping; a negative strip is exactly as meaningful as a positive one here).
+//  5. Every exported leaf whose own path falls under this section's path (pathStartsWith) gets
+//     corrected using THIS section's own drawnX/drawnW/leftStrip/rightStrip: a leaf touching the
+//     section's drawn left edge absorbs leftStrip (shifts left, widens), one touching the drawn
+//     right edge absorbs rightStrip (widens, x unchanged), one touching both (an unsplit section,
+//     or a transom-split section where both sub-panes still span the full width) absorbs both, and
+//     one touching neither (a fully interior sub-pane) is left exactly as drawn. This is what
+//     produces the stated interpretation above: a vertical bar splits the perimeter strips
+//     unevenly between its two sub-panes (only the side actually touching the perimeter absorbs
+//     it); a horizontal (transom) split doesn't move either sub-pane off the section's own left/
+//     right edges at all, so both children get the FULL correction and both come out the section's
+//     own real width.
 //
-// Deliberately non-mutating and scoped to width/xMM only — unframedEdges (including Case 4's own
-// x-range test), meeting-jamb touch detection, and cross-elevation pane matching all keep running
-// on the ORIGINAL drawn leaves array (l.x/l.w), completely untouched by this function, per the
-// batch's own explicit instruction. Returns a Map from leaf object -> { x, w } (the corrected real
-// values) for every leaf belonging to a sliding assembly — callers read from this map only for the
-// specific fields that need the real panel size (xMM, widthMM, areaM2, visibleGlazedAreaM2, and
-// frameLengthMM's sash-perimeter term); every other field keeps reading l.x/l.w directly.
+// Deliberately non-mutating — unframedEdges (including Case 4's own x-range test), meeting-jamb
+// touch detection, and cross-elevation pane matching all keep running on the ORIGINAL drawn leaves
+// array (l.x/l.w), completely untouched by this function. Returns a Map from leaf object -> {x, w}
+// for every leaf belonging to a sliding assembly — callers read from this map only for the fields
+// that need the real panel size (xMM, widthMM, areaM2, visibleGlazedAreaM2, frameLengthMM's sash-
+// perimeter term); every other field keeps reading l.x/l.w directly.
 //
-// [Batch 49 correction: the realX − SLIDING_OVERLAP_MM width reconstruction above only holds when
-// the entered widths equal the prefill defaults. The preset form validates only the TOTAL, so
-// custom widths are legal (ordinary OX at 910mm, O=500/X=510, exported O=450), and with unequal X
-// widths only the first X was ever read. Widths now come from each section node's stored
-// panelWidthMM (stamped by buildSlidingWinOverlapTree) via resolveSlidingRealWidths below; the
-// reconstruction survives only as its fallback for a rawState saved before batch 49. The xMM
-// placement rule is unchanged — just driven by the stored widths.]
+// Never silently skips a sliding assembly it can't resolve: if a section's own path doesn't
+// resolve to a rect in nodeRects at all, throws — same "flag rather than guess" convention as
+// classifySlidingWinJoin elsewhere in this file. This should never actually happen (the section
+// paths computeSlidingWinSectionPaths derives are the exact paths buildSlidingWinOverlapTree's own
+// construction produces, cross-checked in batch 17/18), so a throw here means the tree and this
+// path computation have gone out of sync, not an expected/handled case — silently exporting
+// nothing, or exporting drawn geometry with no correction and no warning, would both be worse than
+// surfacing it. In embed mode, an uncaught throw here propagates out of the "Export JSON"/"Done"
+// button's own click handler; nothing in this file wraps buildExportData in a try/catch, so it
+// reaches the browser as an uncaught exception (visible in devtools) rather than being caught and
+// turned into a postMessage error reply — no different from any other uncaught exception already
+// possible in this codebase (e.g. classifySlidingWinJoin's own throws), not a new gap introduced
+// by this batch.
 //
-// Batch 49 — real per-section panel widths for one sliding assembly, shared by export (above/
-// below) and the reopen prefill (getAssemblyPresetCurrentState). `sectionNodes` are the assembly's
-// own section nodes in pattern order, `drawnWidths` their drawn widths (same order). Uses each
-// node's stored panelWidthMM when EVERY section has one; otherwise (a rawState saved before batch
-// 49, which has no panelWidthMM anywhere) falls back to batch 48's reconstruction — every X is the
-// first X's drawn width, every O is that minus SLIDING_OVERLAP_MM. All-or-nothing on purpose:
-// mixing stored and reconstructed widths within one row could produce a set that no longer sums
-// to the row's real total. If even the fallback can't run (no X in the pattern, or its drawn width
-// unknown), returns drawnWidths unchanged rather than guessing.
-function resolveSlidingRealWidths(pattern, sectionNodes, drawnWidths) {
-  if (sectionNodes.every(nd => nd && typeof nd.panelWidthMM === 'number')) return sectionNodes.map(nd => nd.panelWidthMM);
+// Batch 49 — real per-section panel widths for one sliding assembly, shared by export (above) and
+// the reopen prefill (getAssemblyPresetCurrentState). Batch 51 rewrite: takes the assembly's own
+// assemblyPresetRef marker directly (not per-section nodes) and `drawnWidths` (each section's own
+// drawn width, in pattern order). Uses the marker's stored `panelWidthsMM` when it's an array of
+// pattern.length numbers; otherwise (a rawState saved before batch 49, or before batch 51 moved
+// storage to the marker — neither has panelWidthsMM) falls back to batch 48's reconstruction: every
+// X is the first X's drawn width, every O is that minus SLIDING_OVERLAP_MM. If even the fallback
+// can't run (no X in the pattern, or its drawn width unknown), returns drawnWidths unchanged rather
+// than guessing.
+function resolveSlidingRealWidths(ref, drawnWidths) {
+  const pattern = ref.pattern;
+  if (Array.isArray(ref.panelWidthsMM) && ref.panelWidthsMM.length === pattern.length && ref.panelWidthsMM.every(v => typeof v === 'number')) {
+    return ref.panelWidthsMM.slice();
+  }
   const xIdx = pattern.indexOf('X');
   if (xIdx < 0 || drawnWidths[xIdx] == null) return drawnWidths.slice();
   const realX = drawnWidths[xIdx];
@@ -5861,28 +6007,47 @@ function resolveSlidingRealWidths(pattern, sectionNodes, drawnWidths) {
   return pattern.split('').map(c => c === 'O' ? realO : realX);
 }
 
-function computeSlidingAssemblyLeafCorrections(leaves, ev) {
-  const counterRef = { n: 0 };
+function computeSlidingAssemblyLeafCorrections(leaves, ev, nodeRects) {
   const ranges = [];
-  collectSlidingAssemblyRanges(ev.root, counterRef, ranges);
+  collectSlidingAssemblyRanges(ev.root, [], ranges);
   const corrections = new Map();
-  ranges.forEach(({ pattern, startIdx, endIdx }) => {
-    const assemblyLeaves = leaves.slice(startIdx, endIdx + 1);
+  ranges.forEach(({ path: markedPath, ref }) => {
+    const pattern = ref.pattern;
     const n = pattern.length;
-    if (assemblyLeaves.length !== n) return; // defensive: should always match, never silently guess if it doesn't
+    const sectionPaths = computeSlidingWinSectionPaths(pattern).map(rel => markedPath.concat(rel));
+    const sectionRects = sectionPaths.map((p, i) => {
+      const rect = nodeRects[pathKey(p)];
+      if (!rect) {
+        throw new Error('computeSlidingAssemblyLeafCorrections: section ' + i + ' of a sliding assembly ' +
+          '(pattern "' + pattern + '", marked path [' + markedPath.join(',') + ']) has no drawn rect at ' +
+          'path [' + p.join(',') + '] — the tree and computeSlidingWinSectionPaths have gone out of sync.');
+      }
+      return rect;
+    });
+    const assemblyLeaves = leaves.filter(l => pathStartsWith(l.path, markedPath));
     const sashless = assemblyLeaves.some(l => l.node.sashless === true);
     const tuckIn = ev.hasFrame ? (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM) : 0;
-    // Batch 49 — stored panelWidthMM per leaf, or batch 48's reconstruction for an old rawState.
-    const realW = resolveSlidingRealWidths(pattern, assemblyLeaves.map(l => l.node), assemblyLeaves.map(l => l.w));
-    const realX0 = assemblyLeaves[0].x - tuckIn / 2;
-    const realXs = [realX0];
+    const realW = resolveSlidingRealWidths(ref, sectionRects.map(r => r.w));
+    const realXs = [sectionRects[0].x - tuckIn / 2];
     for (let i = 1; i < n; i++) {
-      const prevDrawnEnd = assemblyLeaves[i - 1].x + assemblyLeaves[i - 1].w;
-      const isOverlapJoin = Math.abs(assemblyLeaves[i].x - prevDrawnEnd) > EDGE_TOUCH_EPS_MM;
-      const gap = isOverlapJoin ? SLIDING_OVERLAP_MM : 0;
-      realXs.push(realXs[i - 1] + realW[i - 1] - gap);
+      const prevDrawnEnd = sectionRects[i - 1].x + sectionRects[i - 1].w;
+      const isOverlapJoin = Math.abs(sectionRects[i].x - prevDrawnEnd) > EDGE_TOUCH_EPS_MM;
+      realXs.push(realXs[i - 1] + realW[i - 1] - (isOverlapJoin ? SLIDING_OVERLAP_MM : 0));
     }
-    assemblyLeaves.forEach((l, i) => { corrections.set(l, { x: realXs[i], w: realW[i] }); });
+    for (let i = 0; i < n; i++) {
+      const drawnX = sectionRects[i].x, drawnW = sectionRects[i].w;
+      const realX = realXs[i], realWi = realW[i];
+      const leftStrip = drawnX - realX;
+      const rightStrip = (realX + realWi) - (drawnX + drawnW);
+      assemblyLeaves.filter(l => pathStartsWith(l.path, sectionPaths[i])).forEach(l => {
+        const touchesLeft = Math.abs(l.x - drawnX) < EDGE_TOUCH_EPS_MM;
+        const touchesRight = Math.abs(l.x + l.w - (drawnX + drawnW)) < EDGE_TOUCH_EPS_MM;
+        corrections.set(l, {
+          x: l.x - (touchesLeft ? leftStrip : 0),
+          w: l.w + (touchesLeft ? leftStrip : 0) + (touchesRight ? rightStrip : 0)
+        });
+      });
+    }
   });
   return corrections;
 }
@@ -6017,7 +6182,11 @@ function buildExportElevation(ev, index, linkedPaneIds) {
   const openingH = getOpeningH(overallH, m);
   const leaves = [];
   const members = [];
-  collectExportGeometry(ev.root, 0, 0, openingW, openingH, [], leaves, members);
+  // Batch 51 — also collects a node-rect map (pathKey(path) -> {x,y,w,h}) for EVERY node visited,
+  // needed below so a sliding assembly's real-panel-size correction can look up each SECTION's own
+  // drawn rect even when that section is a subdivided subtree (a split), not just a leaf.
+  const nodeRects = {};
+  collectExportGeometry(ev.root, 0, 0, openingW, openingH, [], leaves, members, [], nodeRects);
 
   // Batch 48 — real panel sizes for sliding-window (and sliding-door) assembly leaves. Computed
   // once, from the SAME drawn `leaves` array collectExportGeometry just produced, before the main
@@ -6028,7 +6197,7 @@ function buildExportElevation(ev, index, linkedPaneIds) {
   // function is even called) all keep reading l.x/l.w directly, on the original drawn geometry,
   // completely unaffected by this map's existence. Only used below for widthMM, xMM, areaM2,
   // visibleGlazedAreaM2, and frameLengthMM's sash-perimeter term.
-  const slidingCorrections = computeSlidingAssemblyLeafCorrections(leaves, ev);
+  const slidingCorrections = computeSlidingAssemblyLeafCorrections(leaves, ev, nodeRects);
 
   let frameLengthMM = 0;
   const panes = leaves.map(l => {
