@@ -1,4 +1,4 @@
-# Configurator JSON Export Schema — v2 (v1 superseded, batch 39)
+# Configurator JSON Export Schema — v3 (v1 superseded batch 39, v2 superseded batch 43)
 
 Status: built (v1 in batch 29, v2 in batch 39) — this document now describes the actual, current export shape, not a design-only proposal.
 
@@ -23,7 +23,7 @@ Originally written to resolve the open question in the project summary's §6.7 i
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "system": {
     "elevationCount": 2,
     "totalFrameLengthMM": 7100,
@@ -55,25 +55,27 @@ Originally written to resolve the open question in the project summary's §6.7 i
             "visibleGlazedAreaM2": 0.47,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
             "unframedEdgeCount": 0,
-            "linkedPaneId": null
+            "linkedPaneId": null,
+            "sashless": false
           },
           {
             "id": "F2",
             "productClass": "window",
-            "type": "fixed",
+            "type": "horizontal-slider",
             "hingeEdge": null,
-            "slideDirection": null,
+            "slideDirection": "right",
             "bladeWidthMM": null,
             "bladeLengthMM": null,
             "xMM": 600,
             "yMM": 0,
-            "widthMM": 600,
+            "widthMM": 660,
             "heightMM": 900,
-            "areaM2": 0.54,
-            "visibleGlazedAreaM2": 0.54,
-            "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
+            "areaM2": 0.59,
+            "visibleGlazedAreaM2": 0.57,
+            "sashEdgesMM": { "top": 0, "bottom": 0, "left": 10, "right": 10 },
             "unframedEdgeCount": 1,
-            "linkedPaneId": "F"
+            "linkedPaneId": "F",
+            "sashless": true
           }
         ]
       },
@@ -102,7 +104,8 @@ Originally written to resolve the open question in the project summary's §6.7 i
             "visibleGlazedAreaM2": 0.45,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
             "unframedEdgeCount": 1,
-            "linkedPaneId": "F2"
+            "linkedPaneId": "F2",
+            "sashless": false
           }
         ]
       }
@@ -112,7 +115,7 @@ Originally written to resolve the open question in the project summary's §6.7 i
 }
 ```
 
-A 2-elevation (angled join) system exports both elevations under `system.elevations[]`, each with its own `meetingEdges` populated where relevant. `totalFrameLengthMM` at the system level sums both elevations' own `frameLengthMM`. `angledJoinAngleDeg`/`angledJoinType` are `null` on a single-elevation system, and every pane's `linkedPaneId` is `null` throughout in that case too — there's no meeting jamb to check.
+A 2-elevation (angled join) system exports both elevations under `system.elevations[]`, each with its own `meetingEdges` populated where relevant. `totalFrameLengthMM` at the system level sums both elevations' own `frameLengthMM`. `angledJoinAngleDeg`/`angledJoinType` are `null` on a single-elevation system, and every pane's `linkedPaneId` is `null` throughout in that case too — there's no meeting jamb to check. (The example's pane `"F2"` is shown as a sashless sliding-window sash purely to illustrate the field — real geometry for an actual sashless `OX-win` preset would also differ in exact widths per the batch-42 tuck-in formula; not meant as a literal worked example of that calculation.)
 
 Note in the example above: `id` values are scoped per elevation (each elevation labels its own panes independently, starting fresh), so `linkedPaneId` is only meaningful together with knowing which elevation it refers to — Elevation 1's pane `"F2"` (`linkedPaneId: "F"`) refers to Elevation 2's pane `"F"`, not another pane within Elevation 1 itself. With a hard cap of 2 elevations, "the other elevation" is always unambiguous — no elevation index is included in `linkedPaneId`.
 
@@ -129,6 +132,7 @@ Note in the example above: `id` values are scoped per elevation (each elevation 
 | `frameLengthMM` | See calculation below. Not needed by AS 1288 — included for the future pricing tool. |
 | `linkedPaneId` (v2) | The other elevation's pane `id` this pane is joined to along the angled join's meeting jamb, or `null` if this pane doesn't touch that jamb (or no join exists at all). Computed fresh every export — never stored, never editable. See "Cross-elevation pane link" below. |
 | `angledJoinAngleDeg` / `angledJoinType` (v2, system-level) | The join's stored angle (degrees, 90–180) and construction type (`'butt'` or `'mitred'`) — both `null` on a single-elevation system. Live module-level values as captured at "Add angled join" time (batches 35/36), editable afterward via the persistent controls next to "Remove angled join". |
+| `sashless` (v3) | `true` if this pane was built by a sashless sliding-window or double-hung preset (batch 42 — near-zero top/bottom sash, a narrow fixed stile left/right), `false` for every other pane. A direct, undecorated read of the pane's own internal `sashless` flag — no derivation, no inference from `sashEdgesMM`'s actual values. `false` (never omitted) for every pane that isn't sashless, including every pane that existed before batch 42. |
 
 ## Cross-elevation pane link (v2, batch 39; matching rule corrected batch 40)
 
@@ -196,7 +200,7 @@ When this configurator is opened inside an `<iframe>` (`window.parent !== window
 
 **Handshake, in order:**
 
-1. **`ready`** — sent by the configurator once its own initial render has genuinely finished (not before): `{ "type": "ready", "schemaVersion": 2 }`. `schemaVersion` here is the export's own `system` schema version (currently 2, bumped from 1 in batch 39) — this tells the parent which derived-pane-list shape a subsequent `done` will use, and it always matches `done`'s own `export.schemaVersion`.
+1. **`ready`** — sent by the configurator once its own initial render has genuinely finished (not before): `{ "type": "ready", "schemaVersion": 3 }`. `schemaVersion` here is the export's own `system` schema version (v1 → v2 in batch 39, v2 → v3 in batch 43) — this tells the parent which derived-pane-list shape a subsequent `done` will use, and it always matches `done`'s own `export.schemaVersion`.
 2. **`load`** — sent by the parent in response, exactly once: `{ "type": "load", "state": null | <a previously-saved rawState blob> }`.
    - `state: null` — start a fresh, single-elevation session (the existing default). `restoreFromRawState()` is never called.
    - `state: { ...a real rawState object... }` — its own `rawStateSchemaVersion` is checked first. If it doesn't match the configurator's own `RAW_STATE_SCHEMA_VERSION`, the configurator shows a persistent, visible in-page error (not a console log, not an `alert()`) and stops — `restoreFromRawState()` is never called, no partial or best-effort load is attempted. If it matches, `restoreFromRawState(state)` runs and the session is fully reconstructed.

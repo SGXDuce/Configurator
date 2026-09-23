@@ -433,6 +433,14 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       before this batch (every new branch falls through to the prior DEFAULT_SASH_MM/
 //       FRAME_TUCKIN_MM behaviour when sashless is falsy/undefined). No export schema change — a
 //       sashless pane's export representation stays deliberately undecided pending AS1288.
+// 43:   export schema v3 — expose sashless per pane. Every exported pane in buildExportElevation
+//       now carries `sashless: !!node.sashless` — no new logic, no derivation, just exposes the
+//       existing batch-42 internal flag directly. Every pane not built by a sashless preset
+//       exports false (node.sashless is undefined for those, coerced by !!). schemaVersion bumped
+//       to 3 (same precedent as batch 39 — an additive change to system's own pane shape, not
+//       rawState, gets a real version bump); the 'ready' handshake's schemaVersion updated to
+//       match. No change to how sashless panes are created (batch 42), to rawState/
+//       rawStateSchemaVersion, or to the cross-elevation pane-matching logic (batches 39–41).
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5705,7 +5713,12 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       // Batch 39 — computed fresh every export by computeCrossElevationLinks(), never stored.
       // null for every pane on a single-elevation system, and for any pane not touching this
       // elevation's own meeting-tagged jamb.
-      linkedPaneId: linkedPaneIds.has(l.label) ? linkedPaneIds.get(l.label) : null
+      linkedPaneId: linkedPaneIds.has(l.label) ? linkedPaneIds.get(l.label) : null,
+      // Batch 43 (schema v3) — exposes the existing internal sashless flag (batch 42) directly.
+      // No new logic, no derivation — read straight off the leaf. Every pane not built by a
+      // sashless preset (i.e. every pane before batch 42, and every non-sashless pane since)
+      // exports false, never omitted/undefined, via the !! coercion.
+      sashless: !!node.sashless
     };
   });
 
@@ -5847,7 +5860,7 @@ function buildExportData() {
   return {
     ok: true,
     data: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       system: {
         elevationCount: elevations.length,
         totalFrameLengthMM,
@@ -6001,8 +6014,9 @@ if (isEmbedded) {
   // the embedded configurator has genuinely finished initializing — not before. Step 2 (waiting
   // for 'load') is the message listener registered above, already active by the time this sends.
   // Batch 39 — schemaVersion bumped to 2, matching system's own new shape (must match, per the
-  // doc's own statement of what this field means).
-  postToParent({ type: 'ready', schemaVersion: 2 });
+  // doc's own statement of what this field means). Batch 43 — bumped again to 3 for the new
+  // per-pane sashless field, same precedent.
+  postToParent({ type: 'ready', schemaVersion: 3 });
 }
 </script>
 </body>
