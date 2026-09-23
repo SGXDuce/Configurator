@@ -1,6 +1,6 @@
-# Configurator JSON Export Schema — v3 (v1 superseded batch 39, v2 superseded batch 43)
+# Configurator JSON Export Schema — v4 (v1 superseded batch 39, v2 superseded batch 43, v3 superseded batch 44)
 
-Status: built (v1 in batch 29, v2 in batch 39) — this document now describes the actual, current export shape, not a design-only proposal.
+Status: built (v1 in batch 29, v2/v3 in batches 39/43, v4 in batch 44) — this document now describes the actual, current export shape, not a design-only proposal.
 
 Originally written to resolve the open question in the project summary's §6.7 item 1 — the export shape had not been designed before v1.
 
@@ -18,12 +18,13 @@ Originally written to resolve the open question in the project summary's §6.7 i
 - Frame length is a real sum, not a per-pane figure alone. Three components, added together (see "Frame length calculation" below) — AS 1288 doesn't need this field at all, but pricing will, so it's computed now while the geometry is fresh, per your own call.
 - **(v2, batch 39; matching rule corrected batch 40; tolerance corrected batch 41)** The cross-elevation pane link is NOT a stored field anywhere — no new tree-node field, no UI to create/manage/edit it. It's computed fresh, directly from geometry, every single time an export is produced, so there's nothing to go stale. Each side's meeting-tagged jamb is found independently (never assumed to be jambL on one elevation and jambR on the other). Panes are matched by their actual edge position along the jamb (both start and end, within `PANE_EDGE_MATCH_TOL_MM`, 1mm) — NOT by sorted order and array index alone, which batch 39 originally did and batch 40 found to be a real bug (two elevations with the same pane count in the same order can still have misaligned edges). Any pane with no matching partner blocks the ENTIRE export — see "Export blocked on an unmatched meeting-jamb pane" below.
 - **(v2, batch 39)** `angledJoinAngleDeg`/`angledJoinType` (batches 35/36) were deliberately held out of `system` until this pane link could ship alongside them, per this doc's own earlier note — both are now real, documented `system`-level fields, not stubs.
+- **(v4, batch 44)** `unframedEdgeCount` sums three sources without saying which specific edges they are — AS 1288 needs the specific edges (Table 5.3 for vertical/jamb-side edges vs. a different clause for horizontal edges), not just a count. `unframedEdges: {top, bottom, left, right}` is the same three-source computation as `unframedEdgeCount`, mapped per-edge instead of summed — see "sashless boundary" note below for the one place the two fields deliberately disagree.
 
 ## Schema
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "system": {
     "elevationCount": 2,
     "totalFrameLengthMM": 7100,
@@ -55,6 +56,7 @@ Originally written to resolve the open question in the project summary's §6.7 i
             "visibleGlazedAreaM2": 0.47,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
             "unframedEdgeCount": 0,
+            "unframedEdges": { "top": false, "bottom": false, "left": false, "right": false },
             "linkedPaneId": null,
             "sashless": false
           },
@@ -74,6 +76,7 @@ Originally written to resolve the open question in the project summary's §6.7 i
             "visibleGlazedAreaM2": 0.57,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 10, "right": 10 },
             "unframedEdgeCount": 1,
+            "unframedEdges": { "top": false, "bottom": false, "left": true, "right": false },
             "linkedPaneId": "F",
             "sashless": true
           }
@@ -104,6 +107,7 @@ Originally written to resolve the open question in the project summary's §6.7 i
             "visibleGlazedAreaM2": 0.45,
             "sashEdgesMM": { "top": 0, "bottom": 0, "left": 0, "right": 0 },
             "unframedEdgeCount": 1,
+            "unframedEdges": { "top": false, "bottom": false, "left": true, "right": false },
             "linkedPaneId": "F2",
             "sashless": false
           }
@@ -127,7 +131,8 @@ Note in the example above: `id` values are scoped per elevation (each elevation 
 | `type` | Raw configurator vocabulary (`fixed`, `fixed-framed`, `hinged`, `horizontal-slider`, `vertical-slider`, `louvre`). No bucket mapping applied. |
 | `xMM` / `yMM` | Pane's own bottom-left corner, from the elevation's true main origin, Y increasing upward. Converted from the app's internal top-down `walk()` coordinates — this is real conversion logic, not a passthrough. |
 | `sashEdgesMM` | Raw per-edge widths as stored. `fixed` panes always report all-zero (matches existing `glazedAreaM2` special-case). |
-| `unframedEdgeCount` | Combines `sash*Locked` flags (Case 2), meeting-jamb-touching geometry (Case 1), and (batch 30) a `fixed` pane's outer-touching edge on a `hasFrame:false` elevation (Case 3) — see above. |
+| `unframedEdgeCount` | Combines `sash*Locked` flags (Case 2), meeting-jamb-touching geometry (Case 1), and (batch 30) a `fixed` pane's outer-touching edge on a `hasFrame:false` elevation (Case 3) — see above. **Unchanged by batch 44** — still the plain sum of all three sources, including for a sashless pane. See `unframedEdges` below for the one documented case where this diverges from it. |
+| `unframedEdges` (v4) | `{top, bottom, left, right}` booleans — the exact same three sources as `unframedEdgeCount`, mapped per-edge instead of summed, so the receiving tool knows which specific edges are unframed (needed to route AS 1288 Table 5.3 for vertical/jamb-side edges vs. a different clause for horizontal edges — `unframedEdgeCount` alone can't say which). **Sashless boundary:** if the pane is sashless (batch 42), `top` and `bottom` are always forced `false` here regardless of what the three-source computation produced — a sashless pane's rail-free horizontal edges are reported only via `sashless: true`, never via `unframedEdges.top`/`.bottom`. `left`/`right` are never touched by this exception. This means for a sashless `'O'` (fixed) panel on a `hasFrame:false` elevation, `unframedEdges`'s own true-count (2: left+right) can legitimately be LOWER than `unframedEdgeCount` (4, unchanged) — a deliberate, documented inconsistency between the two fields in that one specific case, not a bug. |
 | `visibleGlazedAreaM2` | Uses the renamed label from batch 28 — same computation as `areaM2` minus sash, unchanged. |
 | `frameLengthMM` | See calculation below. Not needed by AS 1288 — included for the future pricing tool. |
 | `linkedPaneId` (v2) | The other elevation's pane `id` this pane is joined to along the angled join's meeting jamb, or `null` if this pane doesn't touch that jamb (or no join exists at all). Computed fresh every export — never stored, never editable. See "Cross-elevation pane link" below. |
@@ -200,7 +205,7 @@ When this configurator is opened inside an `<iframe>` (`window.parent !== window
 
 **Handshake, in order:**
 
-1. **`ready`** — sent by the configurator once its own initial render has genuinely finished (not before): `{ "type": "ready", "schemaVersion": 3 }`. `schemaVersion` here is the export's own `system` schema version (v1 → v2 in batch 39, v2 → v3 in batch 43) — this tells the parent which derived-pane-list shape a subsequent `done` will use, and it always matches `done`'s own `export.schemaVersion`.
+1. **`ready`** — sent by the configurator once its own initial render has genuinely finished (not before): `{ "type": "ready", "schemaVersion": 4 }`. `schemaVersion` here is the export's own `system` schema version (v1 → v2 in batch 39, v2 → v3 in batch 43, v3 → v4 in batch 44) — this tells the parent which derived-pane-list shape a subsequent `done` will use, and it always matches `done`'s own `export.schemaVersion`.
 2. **`load`** — sent by the parent in response, exactly once: `{ "type": "load", "state": null | <a previously-saved rawState blob> }`.
    - `state: null` — start a fresh, single-elevation session (the existing default). `restoreFromRawState()` is never called.
    - `state: { ...a real rawState object... }` — its own `rawStateSchemaVersion` is checked first. If it doesn't match the configurator's own `RAW_STATE_SCHEMA_VERSION`, the configurator shows a persistent, visible in-page error (not a console log, not an `alert()`) and stops — `restoreFromRawState()` is never called, no partial or best-effort load is attempted. If it matches, `restoreFromRawState(state)` runs and the session is fully reconstructed.

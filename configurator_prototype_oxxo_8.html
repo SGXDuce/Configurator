@@ -441,6 +441,21 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       rawState, gets a real version bump); the 'ready' handshake's schemaVersion updated to
 //       match. No change to how sashless panes are created (batch 42), to rawState/
 //       rawStateSchemaVersion, or to the cross-elevation pane-matching logic (batches 39–41).
+// 44:   export schema v4 — per-edge unframedEdges breakdown. New `unframedEdges: {top, bottom,
+//       left, right}` on every exported pane, computed from the same three sources
+//       unframedEdgeCount already sums (sash*Locked = Case 2, meeting-jamb touch = Case 1,
+//       fixed-on-hasFrame:false = Case 3), mapped per-edge instead of summed. Sashless exception,
+//       applied AFTER the three-source computation and ONLY to unframedEdges: if node.sashless ===
+//       true, force top/bottom to false, overriding whatever the computation produced — a sashless
+//       pane's rail-free horizontal edges are represented solely by `sashless:true`, never by
+//       unframedEdges. left/right are untouched by this exception. unframedEdgeCount itself
+//       received NO change — still the unmodified three-source sum, including for sashless panes —
+//       so a sashless 'O' panel on a hasFrame:false elevation can have unframedEdgeCount counting
+//       all 4 edges while unframedEdges's own true-count is only 2 (left+right). Deliberate,
+//       documented inconsistency between the two fields in that one overlap case, not an oversight.
+//       schemaVersion bumped to 4 (same precedent as batches 39/43); the 'ready' handshake's
+//       schemaVersion updated to match. No "supported-edge-pair" concept exists anywhere in this
+//       codebase or its docs to retract (confirmed via grep before this batch).
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5692,6 +5707,35 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       if (!ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
     }
 
+    // Batch 44 (schema v4) — unframedEdges: {top,bottom,left,right}, the same three sources as
+    // unframedEdgeCount above, mapped per-edge instead of summed. Case 2 (sash*Locked) and Case 1
+    // (meeting-jamb touch) map directly; Case 3 (fixed leaf, hasFrame:false) uses the same
+    // per-side !ev.meetingEdges guard as its unframedEdgeCount counterpart above.
+    const unframedEdges = { top: false, bottom: false, left: false, right: false };
+    if (node.sashTopLocked) unframedEdges.top = true;
+    if (node.sashBottomLocked) unframedEdges.bottom = true;
+    if (node.sashLeftLocked) unframedEdges.left = true;
+    if (node.sashRightLocked) unframedEdges.right = true;
+    if (ev.meetingEdges.head && Math.abs(l.y) < EDGE_TOUCH_EPS_MM) unframedEdges.top = true;
+    if (ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) unframedEdges.bottom = true;
+    if (ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) unframedEdges.left = true;
+    if (ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdges.right = true;
+    if (isFixed && !ev.hasFrame) {
+      if (!ev.meetingEdges.head && Math.abs(l.y) < EDGE_TOUCH_EPS_MM) unframedEdges.top = true;
+      if (!ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) unframedEdges.bottom = true;
+      if (!ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) unframedEdges.left = true;
+      if (!ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdges.right = true;
+    }
+    // Sashless exception — applied only to unframedEdges, never to unframedEdgeCount above. A
+    // sashless pane's rail-free top/bottom edges are represented solely by sashless:true; forcing
+    // them false here (left/right untouched) means unframedEdges's true-count can legitimately
+    // differ from unframedEdgeCount for a sashless 'O' panel on a hasFrame:false elevation. This
+    // is a deliberate, documented inconsistency, not a bug — see configurator_export_schema.md.
+    if (node.sashless === true) {
+      unframedEdges.top = false;
+      unframedEdges.bottom = false;
+    }
+
     // Part 5 component 1 — every non-fixed pane's own sash perimeter.
     if (!isFixed) frameLengthMM += 2 * (l.w + l.h);
 
@@ -5710,6 +5754,9 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       visibleGlazedAreaM2,
       sashEdgesMM: { top: sashEdges.top, bottom: sashEdges.bottom, left: sashEdges.left, right: sashEdges.right },
       unframedEdgeCount,
+      // Batch 44 (schema v4) — per-edge breakdown of the same three sources as unframedEdgeCount,
+      // with the sashless exception applied (see comment at its computation above).
+      unframedEdges,
       // Batch 39 — computed fresh every export by computeCrossElevationLinks(), never stored.
       // null for every pane on a single-elevation system, and for any pane not touching this
       // elevation's own meeting-tagged jamb.
@@ -5860,7 +5907,7 @@ function buildExportData() {
   return {
     ok: true,
     data: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       system: {
         elevationCount: elevations.length,
         totalFrameLengthMM,
@@ -6016,7 +6063,7 @@ if (isEmbedded) {
   // Batch 39 — schemaVersion bumped to 2, matching system's own new shape (must match, per the
   // doc's own statement of what this field means). Batch 43 — bumped again to 3 for the new
   // per-pane sashless field, same precedent.
-  postToParent({ type: 'ready', schemaVersion: 3 });
+  postToParent({ type: 'ready', schemaVersion: 4 });
 }
 </script>
 </body>
