@@ -522,6 +522,51 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       batch. Also corrected the core-principles line: unframedEdgeCount is the older, rougher
 //       measure (never updated for Case 4 or the sashless exception); only unframedEdges follows
 //       the structural-support definition exactly.
+// 48:   export: report real panel sizes for sliding-window presets; fix sashless double-hung
+//       overlap. Person-confirmed definition: an exported pane's size is the panel in isolation,
+//       its full made size, independent of the configuration it's in — glazedAreaM2 already
+//       computes "panel area minus own rails/stiles" correctly, the bug was purely in the panel
+//       SIZE fed into it. Two independent fixes.
+//       (1) Sliding-window/door presets: the sashSplit geometry absorbs the whole row's frame
+//       tuck-in into whichever leaf(s) land on the remainder (non-sash) side of the tree's own
+//       nested folds when drawn at the true opening width — traced numerically (not assumed)
+//       against every confirmed pattern (OX, OXX, XOX, OXXO, OXXX, including a flush-joined
+//       multi-run case): no simple per-pattern shortcut generalizes, OXXO in particular puts the
+//       WHOLE tuck-in shortfall on one single leaf, not split evenly across both O's. Root cause:
+//       computeSlidingWinPrefillWidths solves ONE scalar real O width and ONE scalar real X width
+//       (X = O + SLIDING_OVERLAP_MM) for the WHOLE pattern; every X leaf's drawn width already
+//       exactly equals its real width (sashSizeMM, an absolute value baked in at creation, never
+//       recomputed against available space) — only O needs correction, and since every O shares
+//       the same real width, it's simply (any sibling X's drawn width) − SLIDING_OVERLAP_MM.
+//       xMM: the row's own leftmost leaf shifts left by tuckIn/2 (the real panel starts further
+//       into the row's own left end — an UNCONDITIONAL per-row assumption, same as
+//       computeSlidingWinPrefillWidths' own gating, regardless of whether that end genuinely
+//       touches a true elevation jamb); every subsequent leaf placed left-to-right using its own
+//       corrected width and the physical adjacency to its neighbour (overlap join subtracts
+//       SLIDING_OVERLAP_MM, flush join subtracts nothing — read directly off the drawn geometry
+//       itself, not re-derived from classifySlidingWinJoin). New
+//       collectSlidingAssemblyRanges/computeSlidingAssemblyLeafCorrections, wired into
+//       buildExportElevation as a read-only correction map (leaf -> real {x,w}), NOT a mutation of
+//       the drawn leaves array — unframedEdgeCount, unframedEdges (including Case 4's own x-range
+//       test), meeting-jamb touch detection, and cross-elevation pane matching (a separate
+//       collectExportGeometry pass in computeCrossElevationLinks) all keep reading l.x/l.w
+//       directly, byte-for-byte unchanged, confirmed by diff. Only xMM, widthMM, areaM2,
+//       visibleGlazedAreaM2, and frameLengthMM's sash-perimeter term now use the corrected value.
+//       Sliding doors confirmed (not assumed) to share the identical mechanism — same
+//       isSlidingOverlapId gate, same buildSlidingWinOverlapTree, same FRAME_TUCKIN_MM extension
+//       (batch 18's own comment) — so the same fix applies to them automatically, no separate
+//       branch needed. Sliding panel height is STILL exported as opening height — not addressed
+//       here, flagged as an open gap in the docs (item 3).
+//       (2) Sashless double-hung: getDoubleHungOverlapMM now takes an explicit `sashless`
+//       parameter — a sashless unit has no top/bottom tuck-in (its own tuck-in-driving sash is
+//       already zero), so it now adds FRAME_TUCKIN_MM only when hasFrame AND NOT sashless. Every
+//       call site updated to pass its own live sashless value: buildDoubleHungUnit (tree build),
+//       confirmDoubleHungPreset's bottom-height validation, and the top-height prefill in
+//       renderDoubleHungPresetForm (which now reads ev.pendingSplit.sashless live, with the
+//       sashless checkbox wired to re-render on toggle — same "clear/re-render" convention the
+//       sliding-window sashless checkbox already uses, batch 42 — so the prefill can never go
+//       stale relative to the checkbox's own current state). Ordinary (non-sashless) double-hung
+//       confirmed unchanged: sashless=false reduces to the exact pre-batch formula everywhere.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -3677,6 +3722,12 @@ function renderAssemblyPresetForm(bar, rect) {
 // all — this is always a fresh-creation form.
 function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   const unitCount = DOUBLE_HUNG_UNIT_COUNTS[pattern];
+  // Batch 48 — read live off pendingSplit, same convention as the sliding-window form's own
+  // sashless checkbox (batch 42): needed HERE, before the checkbox itself is created below, so
+  // the top-height prefill (which depends on the real overlap value) can already reflect it on
+  // this render pass, rather than only taking effect after a second render.
+  const ev = activeElevation();
+  const sashless = !!ev.pendingSplit.sashless;
 
   const backRow = document.createElement('div');
   backRow.className = 'toolbar-row';
@@ -3711,7 +3762,7 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   // since overlapMM on the node was still the bare 60). rect.h is already the region's own real
   // opening-space height (walk(root, 0, 0, openingW, openingH, ...) is already head/sill-
   // reduced) — no separate subtraction needed on top of it.
-  const topHeightPrefill = (rect.h + getDoubleHungOverlapMM()) / 2;
+  const topHeightPrefill = (rect.h + getDoubleHungOverlapMM(sashless)) / 2;
 
   const unitWidthLabel = document.createElement('span');
   unitWidthLabel.textContent = 'Unit width (mm)';
@@ -3760,9 +3811,13 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   // (appendEditAssemblyWidthsButton bails out entirely for this family), so unlike sliding-window
   // there's no separate reopen-survival concern to trace — this is the only place sashless-ness is
   // ever decided for a double-hung preset. Defaults unchecked; unchecked behaviour is byte-
-  // identical to before this batch. overlapMM/getDoubleHungOverlapMM() is completely unrelated to
-  // this checkbox — the physical interlock distance between the two panes doesn't change with
-  // sash width, so nothing here touches it.
+  // identical to before this batch.
+  // Batch 48 — correction: overlapMM/getDoubleHungOverlapMM() is NOT unrelated to this checkbox
+  // after all — a sashless unit has no top/bottom tuck-in (see getDoubleHungOverlapMM's own
+  // updated comment), so toggling this checkbox now re-prefills the top-height field, same
+  // "clear the cached value, re-render" pattern the sliding-window sashless checkbox already uses
+  // (batch 42) — otherwise the prefill computed on this render pass (before the person's own
+  // toggle) would silently go stale the instant they check the box.
   const sashlessRow = document.createElement('div');
   sashlessRow.className = 'toolbar-row';
   const sashlessLabel = document.createElement('label');
@@ -3770,6 +3825,11 @@ function renderDoubleHungPresetForm(bar, rect, pattern, productClass) {
   const sashlessCheckbox = document.createElement('input');
   sashlessCheckbox.type = 'checkbox';
   sashlessCheckbox.id = 'dhSashlessCheckbox';
+  sashlessCheckbox.checked = sashless;
+  sashlessCheckbox.onchange = () => {
+    ev.pendingSplit.sashless = sashlessCheckbox.checked;
+    render();
+  };
   sashlessLabel.appendChild(sashlessCheckbox);
   sashlessLabel.appendChild(document.createTextNode('Build sashless (no top/bottom sash, narrow stile)?'));
   sashlessRow.appendChild(sashlessLabel);
@@ -3832,12 +3892,12 @@ function confirmDoubleHungPreset(rect, pattern, productClass, unitCount, sashles
   if (!(unitWidth > 0)) { errDiv.textContent = 'Enter a unit width greater than 0.'; return; }
   if (unitCount > 1 && !(mullionThickness > 0)) { errDiv.textContent = 'Enter a mullion thickness greater than 0.'; return; }
 
-  const bottomHeight = rect.h - topHeight + getDoubleHungOverlapMM();
+  const bottomHeight = rect.h - topHeight + getDoubleHungOverlapMM(sashless);
   if (!(topHeight >= MIN_PANE_MM) || !(bottomHeight >= MIN_PANE_MM)) {
     errDiv.textContent = 'Top height ' + Math.round(topHeight) + 'mm and derived bottom height ' +
       Math.round(bottomHeight) + 'mm (region height ' + Math.round(rect.h) + 'mm minus top height ' +
       'plus the ' + DOUBLE_HUNG_OVERLAP_MM + 'mm overlap' +
-      (ev.hasFrame ? ' plus the ' + FRAME_TUCKIN_MM + 'mm frame tuck-in' : '') +
+      (ev.hasFrame && !sashless ? ' plus the ' + FRAME_TUCKIN_MM + 'mm frame tuck-in' : '') +
       ') must each be at least ' + MIN_PANE_MM + 'mm.';
     return;
   }
@@ -5262,8 +5322,16 @@ const DOUBLE_HUNG_OVERLAP_MM = 60;
 // that could (and did) drift apart. walk()'s own sashSplit remSize geometry (unmodified) is what
 // actually determines the rendered bottom pane height; every caller that needs double-hung's
 // overlap value now goes through this one function so they can never diverge again.
-function getDoubleHungOverlapMM() {
-  return DOUBLE_HUNG_OVERLAP_MM + (activeElevation().hasFrame ? FRAME_TUCKIN_MM : 0);
+// Batch 48 — `sashless` (default false) is now an explicit parameter: a sashless double-hung unit
+// has no top/bottom tuck-in at all (its top/bottom sash is already zero, and — same physical
+// reasoning as the sliding-window fix in this same batch — FRAME_TUCKIN_MM was never confirmed to
+// apply here in the first place; §5's own open item already flags whether double-hung's vertical
+// tuck-in applies at all as unconfirmed for the ORDINARY case, so a sashless unit certainly gets
+// none). Every call site below is updated to pass its own live sashless value through, so the
+// three formulas (tree build, top-height prefill, bottom-height validation) can never drift apart
+// again — same "single source of truth" precedent batch 21 established for the ordinary case.
+function getDoubleHungOverlapMM(sashless) {
+  return DOUBLE_HUNG_OVERLAP_MM + (activeElevation().hasFrame && !sashless ? FRAME_TUCKIN_MM : 0);
 }
 // Batch 42 — `sashless` (default false): overlapMM/getDoubleHungOverlapMM() is completely
 // unchanged either way — the physical interlock distance between the two panes is not affected
@@ -5287,7 +5355,7 @@ function buildDoubleHungUnit(productClass, topHeightMM, sashless) {
     : { kind: 'filled', type: 'vertical-slider', slideDirection: 'up', productClass,
         sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM };
   return {
-    kind: 'sashSplit', axis: 'h', fromEdge: 'start', sashSizeMM: topHeightMM, overlapMM: getDoubleHungOverlapMM(),
+    kind: 'sashSplit', axis: 'h', fromEdge: 'start', sashSizeMM: topHeightMM, overlapMM: getDoubleHungOverlapMM(sashless),
     children: [topLeaf, bottomLeaf]
   };
 }
@@ -5611,6 +5679,111 @@ function collectExportGeometry(node, x, y, w, h, labelParts, leavesOut, membersO
   }
 }
 
+// Batch 48 — sliding-window assembly leaf ranges, for the real-panel-size export correction
+// below. Walks the tree in EXACT lockstep with collectExportGeometry's own traversal order
+// (empty -> skip, filled -> count one leaf, sashSplit -> children[0] then children[1], plain
+// split -> children[0] then children[1] — mirrored on purpose, not reimplemented independently),
+// so the leaf-count reached at any point in this walk equals the index that leaf will land at in
+// collectExportGeometry's own leavesOut array. Deliberately does NOT touch or duplicate
+// collectExportGeometry itself (that function's own geometry math is untouched by this batch —
+// only used here to find WHICH leaves belong to a sliding-window assembly, and their pattern).
+// Returns an array of { pattern, startIdx, endIdx } — one entry per assemblyPresetRef-marked
+// sliding-window node found (isSlidingOverlapId(id, pattern)), inclusive leaf-array index range.
+// Casement/awning/double-hung presets are marked too (assemblyPresetRef is stamped on every
+// markable family, not just sliding) but are excluded here by the isSlidingOverlapId check — this
+// batch's fix is sliding-window (and sliding-door, per the same mechanism) only.
+function collectSlidingAssemblyRanges(node, counterRef, rangesOut) {
+  if (node.kind === 'empty') return;
+  if (node.kind === 'filled') { counterRef.n++; return; }
+  // sashSplit and plain split both just recurse into their two children in order — fromEdge only
+  // changes GEOMETRY (handled entirely by collectExportGeometry, untouched here), never which
+  // child is visited first, so both kinds share this same walk with no branch needed on fromEdge.
+  const ref = node.assemblyPresetRef;
+  const isSliding = ref && isSlidingOverlapId(ref.id, ref.pattern);
+  const startIdx = counterRef.n;
+  collectSlidingAssemblyRanges(node.children[0], counterRef, rangesOut);
+  collectSlidingAssemblyRanges(node.children[1], counterRef, rangesOut);
+  if (isSliding) rangesOut.push({ pattern: ref.pattern, startIdx, endIdx: counterRef.n - 1 });
+}
+
+// Batch 48 — corrects a sliding-window (or sliding-door) assembly's own leaves in-place so their
+// exported x/w reflect the REAL panel size (the section width entered in the preset form),
+// instead of the drawn geometry's tuck-in-absorbed values. Person-confirmed definition: an
+// exported pane's size is the panel in isolation, its full made size, independent of the
+// configuration it's in — glazedAreaM2/visibleGlazedAreaM2 already compute "panel area minus own
+// rails/stiles" correctly; the bug was purely in the panel SIZE fed into that calculation.
+//
+// Root cause, traced (not assumed) against the actual committed formulas: computeSlidingWinPrefillWidths
+// solves ONE scalar real O width and ONE scalar real X width (X = O + SLIDING_OVERLAP_MM) for the
+// WHOLE pattern, uniformly — every O leaf shares the same real width, every X leaf shares the
+// same real width, regardless of pattern length, run count, or position. buildSlidingWinOverlapTree
+// then builds the tree using these AS THE SASH SIDE'S OWN sashSizeMM (an absolute value baked in
+// at creation, never recomputed against available space) — so every X leaf's DRAWN width already
+// exactly equals its real width, confirmed by direct trace. The row's own tuck-in (FRAME_TUCKIN_MM
+// or SASHLESS_FRAME_TUCKIN_MM, flat per row when hasFrame, split conceptually as tuckIn/2 at each
+// of the row's own two outer edges — batch 18's own "leftmost panel's left edge and the rightmost
+// panel's right edge, regardless of panel count" rule, applied unconditionally whenever hasFrame is
+// true, REGARDLESS of whether this assembly's own row actually touches a true elevation jamb — this
+// mirrors computeSlidingWinPrefillWidths' own unconditional gating exactly, not a new assumption)
+// shows up ONLY in whichever leaf(s) end up on the REMAINDER (non-sash) side of the tree's own
+// nested folds when drawn at the true opening width, traced numerically across every confirmed
+// pattern (OX, OXX, XOX, OXXO, OXXX, including a flush-joined multi-run case) — no simple
+// per-pattern shortcut generalizes (OXXO in particular puts the WHOLE tuck-in shortfall on one
+// single leaf, not split evenly across both O's), so this does not try to re-derive WHICH leaf
+// absorbed it. Instead: since every O's real width and every X's real width are each a single
+// shared scalar for the whole pattern, and X's drawn width already IS that scalar, the real O
+// width for the whole assembly is simply (any sibling X's drawn width) − SLIDING_OVERLAP_MM —
+// numerically verified against all 5 patterns' actual drawn output, exact match every time.
+//
+// xMM: leaf 0 (the row's own leftmost, drawn-order) shifts left by tuckIn/2 from its drawn x (the
+// real panel starts tuckIn/2 further into the row's own left end, whether or not that end
+// happens to touch a true elevation jamb — same unconditional-per-row assumption as the width
+// fix). Every subsequent leaf is then placed left-to-right from the corrected leaf 0, using each
+// leaf's own corrected real width and the physical adjacency to its left neighbour — an overlap
+// join subtracts SLIDING_OVERLAP_MM (leaves physically overlap by that much), a flush join
+// subtracts nothing (leaves physically abut) — determined directly from the DRAWN geometry itself
+// (leaves[i].x < leaves[i-1].x+leaves[i-1].w means that pair's join was an overlap; equal means
+// flush), not re-derived from classifySlidingWinJoin, so this needs no access to slideDirections
+// or any other UI-only state. Verified numerically: the rightmost leaf's own corrected right edge
+// always lands at exactly openingW + tuckIn/2 past the true opening boundary, for every pattern
+// traced — confirming the whole row's own two ends are symmetric even when the WIDTH shortfall
+// wasn't.
+//
+// Deliberately non-mutating and scoped to width/xMM only — unframedEdges (including Case 4's own
+// x-range test), meeting-jamb touch detection, and cross-elevation pane matching all keep running
+// on the ORIGINAL drawn leaves array (l.x/l.w), completely untouched by this function, per the
+// batch's own explicit instruction. Returns a Map from leaf object -> { x, w } (the corrected real
+// values) for every leaf belonging to a sliding assembly — callers read from this map only for the
+// specific fields that need the real panel size (xMM, widthMM, areaM2, visibleGlazedAreaM2, and
+// frameLengthMM's sash-perimeter term); every other field keeps reading l.x/l.w directly.
+function computeSlidingAssemblyLeafCorrections(leaves, ev) {
+  const counterRef = { n: 0 };
+  const ranges = [];
+  collectSlidingAssemblyRanges(ev.root, counterRef, ranges);
+  const corrections = new Map();
+  ranges.forEach(({ pattern, startIdx, endIdx }) => {
+    const assemblyLeaves = leaves.slice(startIdx, endIdx + 1);
+    const n = pattern.length;
+    if (assemblyLeaves.length !== n) return; // defensive: should always match, never silently guess if it doesn't
+    const sashless = assemblyLeaves.some(l => l.node.sashless === true);
+    const tuckIn = ev.hasFrame ? (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM) : 0;
+    const xIdx = pattern.split('').findIndex(c => c === 'X');
+    const realX = assemblyLeaves[xIdx].w;
+    const realO = realX - SLIDING_OVERLAP_MM;
+    const realW = pattern.split('').map(c => c === 'O' ? realO : realX);
+    const realX0 = assemblyLeaves[0].x - tuckIn / 2;
+    const realXs = [realX0];
+    for (let i = 1; i < n; i++) {
+      const prevDrawnEnd = assemblyLeaves[i - 1].x + assemblyLeaves[i - 1].w;
+      const isOverlapJoin = Math.abs(assemblyLeaves[i].x - prevDrawnEnd) > EDGE_TOUCH_EPS_MM;
+      const gap = isOverlapJoin ? SLIDING_OVERLAP_MM : 0;
+      realXs.push(realXs[i - 1] + realW[i - 1] - gap);
+    }
+    assemblyLeaves.forEach((l, i) => { corrections.set(l, { x: realXs[i], w: realW[i] }); });
+  });
+  return corrections;
+}
+
 // Per-elevation-index resolution of overallW/overallH — ONLY the currently-active elevation's
 // object has stale values (the live source of truth for it is the frameW/frameH DOM inputs while
 // it's active; see setActiveElevationIndex/newElevation's own comments). Every other elevation
@@ -5743,17 +5916,36 @@ function buildExportElevation(ev, index, linkedPaneIds) {
   const members = [];
   collectExportGeometry(ev.root, 0, 0, openingW, openingH, [], leaves, members);
 
+  // Batch 48 — real panel sizes for sliding-window (and sliding-door) assembly leaves. Computed
+  // once, from the SAME drawn `leaves` array collectExportGeometry just produced, before the main
+  // per-pane loop below runs. Deliberately a separate, read-only correction map (leaf -> real
+  // {x, w}) rather than mutating `leaves` in place — unframedEdgeCount, unframedEdges (including
+  // Case 4), meeting-jamb touch detection, and cross-elevation pane matching (in
+  // computeCrossElevationLinks, which runs its own separate collectExportGeometry pass before this
+  // function is even called) all keep reading l.x/l.w directly, on the original drawn geometry,
+  // completely unaffected by this map's existence. Only used below for widthMM, xMM, areaM2,
+  // visibleGlazedAreaM2, and frameLengthMM's sash-perimeter term.
+  const slidingCorrections = computeSlidingAssemblyLeafCorrections(leaves, ev);
+
   let frameLengthMM = 0;
   const panes = leaves.map(l => {
     const node = l.node;
     const isFixed = node.type === 'fixed';
     const sashEdges = isFixed ? { top: 0, bottom: 0, left: 0, right: 0 } : getSashEdges(node);
-    const areaM2 = (l.w * l.h) / 1e6;
-    const visibleGlazedAreaM2 = glazedAreaM2(l);
+    // Batch 48 — realGeom is {x: l.x, w: l.w} for every leaf NOT part of a sliding assembly
+    // (identity, no change), or the corrected real panel {x, w} for one that is. Only this
+    // variable feeds widthMM/xMM/areaM2/visibleGlazedAreaM2 below — every other calculation in
+    // this function keeps using `l` (the original drawn leaf) directly, untouched.
+    const realGeom = slidingCorrections.get(l) || { x: l.x, w: l.w };
+    const areaM2 = (realGeom.w * l.h) / 1e6;
+    const visibleGlazedAreaM2 = glazedAreaM2({ w: realGeom.w, h: l.h, node: l.node });
 
     // Part 3 — top-down internal coords -> bottom-left corner from the true main origin
-    // (mainOrigin(), never ev.customOrigin), Y increasing upward.
-    const xMM = l.x + m.jambL;
+    // (mainOrigin(), never ev.customOrigin), Y increasing upward. xMM uses the corrected real
+    // panel x (batch 48) — the physical start of the panel, including any part running into a
+    // jamb; yMM is untouched (item 3, this batch — sliding panel height is still the opening
+    // height, an open gap, not addressed here).
+    const xMM = realGeom.x + m.jambL;
     const yMM = openingH + m.sill - (l.y + l.h);
 
     // Part 4 — unframedEdgeCount: Case 2 (sash*Locked, silicone joint to a neighbour) and Case 1
@@ -5868,8 +6060,9 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       });
     }
 
-    // Part 5 component 1 — every non-fixed pane's own sash perimeter.
-    if (!isFixed) frameLengthMM += 2 * (l.w + l.h);
+    // Part 5 component 1 — every non-fixed pane's own sash perimeter. Uses the real panel width
+    // (batch 48) — the sash perimeter is a property of the panel itself, same as areaM2 above.
+    if (!isFixed) frameLengthMM += 2 * (realGeom.w + l.h);
 
     return {
       id: l.label,
@@ -5880,7 +6073,7 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       bladeWidthMM: node.bladeWidthMM != null ? node.bladeWidthMM : null,
       bladeLengthMM: node.bladeLengthMM != null ? node.bladeLengthMM : null,
       xMM, yMM,
-      widthMM: l.w,
+      widthMM: realGeom.w,
       heightMM: l.h,
       areaM2,
       visibleGlazedAreaM2,
