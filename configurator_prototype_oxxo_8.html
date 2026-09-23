@@ -479,6 +479,35 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       within a sashless sliding-window preset: casement/awning (plain mullion splits, no overlap
 //       joins) and double-hung (no fixed leaves) confirmed by inspection to never reach this code.
 //       Does not apply to a non-sashless fixed pane under any circumstance.
+// 46:   sashless: remove the flag from O leaves, keep Case 4 via the neighbour. Physical product
+//       confirmed by the person (not derived): a sashless O's top, bottom, AND outer jamb are all
+//       genuinely frame-supported; only its inner edge facing an X is unsupported. sashless:true
+//       means "route to AS1288 Clause 5.15" — true for X, false for O. Three changes.
+//       (1) buildAssemblyPresetTree no longer sets sashless:true on a sashless preset's O leaves —
+//       only X leaves carry it now. O keeps all-zero sash on all four edges (batch 45, unchanged).
+//       Double-hung unaffected (no O leaves at all).
+//       (2) Case 4's gate changed from "this leaf is sashless" to "this fixed leaf's matched
+//       overlap-join neighbour is sashless" (node.type==='fixed' this leaf, o.node.sashless===true
+//       the matched neighbour) — same x-range+y-range detection, same left/right-by-center logic,
+//       unchanged. A non-sashless O next to a non-sashless X still never fires.
+//       (3) Batch 44's sashless top/bottom exception: no code change — gated on node.sashless,
+//       which after (1) only X leaves ever have, so it now only ever fires for X. Confirmed by
+//       trace: a sashless O's top/bottom now follow ordinary rules — false with frame on, true via
+//       Case 3 when hasFrame:false (no longer suppressed).
+//       (4) Grepped every reader of node.sashless. The two `.some(l => l.sashless === true)`
+//       readers (the reopen tuck-in check in confirmEdit, and the matching one in
+//       renderAssemblyPresetForm's edit-mode width calc) are unaffected — every confirmed sliding-
+//       window pattern (OX/OXX/XOX/OXXO/OXXX) contains at least one X, which still carries the
+//       flag, so `.some()` still correctly detects a sashless row. The export's own
+//       `sashless: !!node.sashless` (unchanged code) now correctly reflects the corrected value
+//       directly. No other readers found.
+//       (5) restoreFromRawState now walks the restored tree (new stripSashlessFromFixedLeaves
+//       helper, same kind/children recursion walk()/collectExportGeometry already use) and strips
+//       any leftover sashless:true from a type:'fixed' leaf, so a rawState blob saved before this
+//       batch can't re-export a wrongly-flagged O. No rawStateSchemaVersion bump — the leaf shape
+//       itself is unchanged, only which leaves are allowed to carry the flag.
+//       No schemaVersion bump (same precedent as batch 45 — corrects what fills the existing v4
+//       shape, doesn't change the shape itself).
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5094,10 +5123,16 @@ function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
 // Batch 45 — corrected: a sashless O ('fixed') leaf must be zero on ALL FOUR edges, matching an
 // ordinary bare fixed pane exactly — it has no sash material at all, left/right included. Batch
 // 42 originally stamped SASHLESS_STILE_MM on every sashless leaf's left/right regardless of type,
-// which was wrong for O specifically (there is no real stile there — see the batch-45 Case-4
-// unframedEdges fix for the export-side consequence of this). SASHLESS_STILE_MM left/right is
-// still correct and unchanged for X ('horizontal-slider') leaves — that's the pane whose glass
+// which was wrong for O specifically (there is no real stile there). SASHLESS_STILE_MM left/right
+// is still correct and unchanged for X ('horizontal-slider') leaves — that's the pane whose glass
 // genuinely stops short of the full width, at a narrow real stile.
+// Batch 46 — corrected again: `sashless: true` itself no longer goes on O leaves. Confirmed by the
+// person (physical product, not derived): a sashless O's top, bottom, AND outer jamb edge are all
+// genuinely supported by the frame — only its inner vertical edge (facing an X) is unsupported,
+// and that's already captured export-side by Case 4 (unframedEdges), not by the sashless flag.
+// `sashless: true` means "this pane's horizontal edges are unsupported, route to AS1288 Clause
+// 5.15" — true for X, false for O. O keeps its all-zero sash (batch 45, unchanged) but no longer
+// carries the flag at all; only X leaves do.
 function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id, sashless) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   const leaves = pattern.split('').map((ch, i) => {
@@ -5108,7 +5143,7 @@ function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, p
           sashTopMM: 0, sashBottomMM: 0,
           sashLeftMM: type === 'fixed' ? 0 : SASHLESS_STILE_MM,
           sashRightMM: type === 'fixed' ? 0 : SASHLESS_STILE_MM,
-          sashless: true
+          ...(type === 'fixed' ? {} : { sashless: true })
         }
       : {
           kind: 'filled', type, productClass,
@@ -5756,8 +5791,13 @@ function buildExportElevation(ev, index, linkedPaneIds) {
     // Sashless exception — applied only to unframedEdges, never to unframedEdgeCount above. A
     // sashless pane's rail-free top/bottom edges are represented solely by sashless:true; forcing
     // them false here (left/right untouched) means unframedEdges's true-count can legitimately
-    // differ from unframedEdgeCount for a sashless 'O' panel on a hasFrame:false elevation. This
-    // is a deliberate, documented inconsistency, not a bug — see configurator_export_schema.md.
+    // differ from unframedEdgeCount. This is a deliberate, documented inconsistency, not a bug —
+    // see configurator_export_schema.md.
+    // Batch 46 — no code change here, only a scope correction: since node.sashless is no longer
+    // ever set on an O ('fixed') leaf (see buildAssemblyPresetTree's batch-46 comment), this
+    // exception now only ever fires for X leaves in practice. A sashless O's own top/bottom follow
+    // the ordinary, unexceptional Case 1/3 rules — false with the frame on (nothing sets them),
+    // true via Case 3 when hasFrame:false (genuinely no jamb and no sash on that outer edge).
     if (node.sashless === true) {
       unframedEdges.top = false;
       unframedEdges.bottom = false;
@@ -5765,13 +5805,19 @@ function buildExportElevation(ev, index, linkedPaneIds) {
 
     // Batch 45 — Case 4 (unframedEdges-only, NOT added to unframedEdgeCount — a second,
     // independently-documented divergence between the two fields, distinct from the sashless
-    // top/bottom exception above): a sashless O ('fixed') leaf's edge at an INTERNAL overlap join
-    // (not an outer jamb/head/sill boundary — those are already correctly handled by Case 3 above)
-    // is unframed, since batch 45's own fix above means that edge now carries zero real sash
-    // material. Gated strictly on this leaf's own node.sashless === true && node.type === 'fixed'
-    // — never on the neighbour's value, since sashless applies uniformly to the whole preset, so a
-    // sashless O's neighbour is guaranteed sashless too; checking the neighbour would be redundant,
-    // not more correct.
+    // top/bottom exception above): a fixed ('O') leaf's edge at an INTERNAL overlap join with a
+    // sashless neighbour (not an outer jamb/head/sill boundary — those are already correctly
+    // handled by Case 3 above) is unframed, since that edge carries zero real sash material there.
+    //
+    // Batch 46 — gate corrected: checks the MATCHED NEIGHBOUR's own node.sashless, not this leaf's
+    // own (O leaves no longer carry sashless:true at all as of this batch — see
+    // buildAssemblyPresetTree's own batch-46 comment; confirmed by the person that O's outer jamb
+    // AND top/bottom are genuinely frame-supported, only its inner edge facing an X is
+    // unsupported). This is the physically correct question regardless: "is the pane on the other
+    // side of this join a sashless X (no real sash there to frame this edge)?", never "is this O
+    // itself sashless" (O is never sashless as a concept now — sashless describes X's own
+    // unsupported top/bottom). Gate: node.type === 'fixed' (this leaf), and the matched
+    // overlap-join neighbour's own node.sashless === true.
     //
     // Detection: read directly off buildSlidingWinOverlapTree's own confirmed output shape, not
     // guessed. A sliding-window overlap join is a sashSplit node whose two children's regions
@@ -5784,20 +5830,20 @@ function buildExportElevation(ev, index, linkedPaneIds) {
     // overlap (this leaf's [x, x+w] genuinely intersects another leaf's [x, x+w]), combined with a
     // real y-range overlap so a leaf merely sharing an x-position from an unrelated stacked run
     // (e.g. across a plain flush split joining separate runs) is never mistaken for an overlap-join
-    // neighbour. Left vs right is decided by which side the other leaf's own center falls on.
-    // Only ever fires within a sashless sliding-window assembly: casement/awning build plain
-    // mullion splits with no overlap joins and no `fixed` leaves at all, and double-hung's
-    // buildDoubleHungUnit never builds a `type:'fixed'` leaf either (confirmed by direct inspection
-    // of both builders, not assumed) — so this can only ever be reached via a sashless
-    // OX/OXX/OXXO/OXXX-win preset. O-O adjacency (which would make "left or right" ambiguous) is
-    // confirmed impossible in every pattern classifySlidingWinJoin actually handles — it throws on
-    // that case rather than allow it (see classifySlidingWinJoin's own final branch), so this leaf
-    // never has more than one overlap-join neighbour per side. Does NOT apply to a non-sashless
-    // fixed pane under any circumstance — an ordinary O next to an ordinary X is genuinely framed
-    // by real sash material there, gated out entirely by the sashless === true check.
-    if (node.sashless === true && node.type === 'fixed') {
+    // neighbour. Left vs right is decided by which side the matched neighbour's own center falls
+    // on, exactly as before. Only ever fires within a sashless sliding-window assembly: casement/
+    // awning build plain mullion splits with no overlap joins and no `fixed` leaves at all, and
+    // double-hung's buildDoubleHungUnit never builds a `type:'fixed'` leaf either (confirmed by
+    // direct inspection of both builders, not assumed) — so this can only ever be reached via a
+    // sashless OX/OXX/OXXO/OXXX-win preset. O-O adjacency (which would make "left or right"
+    // ambiguous) is confirmed impossible in every pattern classifySlidingWinJoin actually handles —
+    // it throws on that case rather than allow it (see classifySlidingWinJoin's own final branch),
+    // so this leaf never has more than one overlap-join neighbour per side. A non-sashless O next
+    // to a non-sashless X still never fires — the neighbour's own node.sashless is false there.
+    if (node.type === 'fixed') {
       leaves.forEach(o => {
         if (o === l) return;
+        if (o.node.sashless !== true) return;
         const xOverlaps = o.x < l.x + l.w && o.x + o.w > l.x;
         const yOverlaps = o.y < l.y + l.h && o.y + o.h > l.y;
         if (!xOverlaps || !yOverlaps) return;
@@ -5937,8 +5983,26 @@ function serializeRawState() {
 // active, not just on the object, so the active elevation's own restored values must be pushed
 // into those inputs explicitly before render() — render() itself reads the DOM via
 // getOverallW()/getOverallH()/getMembers(), not from the elevation object directly.
+// Batch 46 — a rawState saved before this batch may have `sashless: true` on a `type:'fixed'`
+// (O) leaf, from before the flag was restricted to X leaves only (buildAssemblyPresetTree's own
+// batch-46 comment). Walking the tree here and stripping it from any `fixed` leaf on load means an
+// old saved session can never re-export a wrongly-flagged O, without needing a rawStateSchemaVersion
+// bump — the shape of a leaf object is unchanged, only which leaves are allowed to carry the flag.
+// Recurses the same kind/children shape walk()/collectExportGeometry already use; 'filled' is the
+// only kind with a `type` field to check, 'empty' has nothing to strip, 'split'/'sashSplit' just
+// recurse into their two children.
+function stripSashlessFromFixedLeaves(node) {
+  if (node.kind === 'filled') {
+    if (node.type === 'fixed' && node.sashless === true) delete node.sashless;
+    return;
+  }
+  if (node.kind === 'empty') return;
+  stripSashlessFromFixedLeaves(node.children[0]);
+  stripSashlessFromFixedLeaves(node.children[1]);
+}
 function restoreFromRawState(state) {
   elevations = state.elevations;
+  elevations.forEach(ev => stripSashlessFromFixedLeaves(ev.root));
   activeElevationIndex = state.activeElevationIndex;
   angledJoinAngleDeg = state.angledJoinAngleDeg;
   angledJoinType = state.angledJoinType;
