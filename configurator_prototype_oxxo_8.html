@@ -6644,20 +6644,46 @@ function buildExportElevation(ev, index, linkedPaneIds) {
     // unframedEdgeCount above, mapped per-edge instead of summed. Case 2 (sash*Locked) and Case 1
     // (meeting-jamb touch) map directly; Case 3 (fixed leaf, hasFrame:false) uses the same
     // per-side !ev.meetingEdges guard as its unframedEdgeCount counterpart above.
+    //
+    // Batch 55 (schema v5) — unframedEdgeReasons: {top,bottom,left,right}, null when framed, else
+    // exactly which of Case 1-4 unframed it. setUnframedEdge is the single point every Case block
+    // (including Case 4 further below) now goes through, both so the reason travels with the
+    // boolean and so there is one place to defensively catch two Case blocks disagreeing about
+    // the SAME edge — see its own comment. Confirmed (not assumed — see the batch's own
+    // investigation, recorded in configurator_export_schema.md) that Case 2 and Case 4, the two
+    // cases raised as a possible conflict, cannot both set the same edge: Case 2's edge is always
+    // the BRAND-NEW interior boundary a split just created (strictly between 0 and the available
+    // width/height, per confirmSplit/confirmUnframedJoint's own MIN_PANE_MM check — never a
+    // pre-existing outer edge of either resulting child), while Case 4's edge is always a
+    // PRE-EXISTING outer edge inherited unchanged from before that split (the genuine ~60mm
+    // sliding-overlap range-overlap it detects is a signature only buildSlidingWinOverlapTree's
+    // own construction produces). The same interior-vs-outer argument also separates Case 2 from
+    // Case 1/3 (both outer-boundary checks). The throw below is a backstop regardless, not a
+    // substitute for this reasoning holding.
     const unframedEdges = { top: false, bottom: false, left: false, right: false };
-    if (node.sashTopLocked) unframedEdges.top = true;
-    if (node.sashBottomLocked) unframedEdges.bottom = true;
-    if (node.sashLeftLocked) unframedEdges.left = true;
-    if (node.sashRightLocked) unframedEdges.right = true;
-    if (ev.meetingEdges.head && Math.abs(l.y) < EDGE_TOUCH_EPS_MM) unframedEdges.top = true;
-    if (ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) unframedEdges.bottom = true;
-    if (ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) unframedEdges.left = true;
-    if (ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdges.right = true;
+    const unframedEdgeReasons = { top: null, bottom: null, left: null, right: null };
+    function setUnframedEdge(edge, reason) {
+      if (unframedEdgeReasons[edge] != null && unframedEdgeReasons[edge] !== reason) {
+        throw new Error('buildExportElevation: pane ' + l.label + ' edge "' + edge + '" was flagged ' +
+          'unframed for two different reasons — "' + unframedEdgeReasons[edge] + '" and then "' + reason +
+          '" — rather than silently keeping whichever Case ran last.');
+      }
+      unframedEdges[edge] = true;
+      unframedEdgeReasons[edge] = reason;
+    }
+    if (node.sashTopLocked) setUnframedEdge('top', 'silicone-flat');
+    if (node.sashBottomLocked) setUnframedEdge('bottom', 'silicone-flat');
+    if (node.sashLeftLocked) setUnframedEdge('left', 'silicone-flat');
+    if (node.sashRightLocked) setUnframedEdge('right', 'silicone-flat');
+    if (ev.meetingEdges.head && Math.abs(l.y) < EDGE_TOUCH_EPS_MM) setUnframedEdge('top', 'angled-joint');
+    if (ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) setUnframedEdge('bottom', 'angled-joint');
+    if (ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) setUnframedEdge('left', 'angled-joint');
+    if (ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) setUnframedEdge('right', 'angled-joint');
     if (isFixed && !ev.hasFrame) {
-      if (!ev.meetingEdges.head && Math.abs(l.y) < EDGE_TOUCH_EPS_MM) unframedEdges.top = true;
-      if (!ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) unframedEdges.bottom = true;
-      if (!ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) unframedEdges.left = true;
-      if (!ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdges.right = true;
+      if (!ev.meetingEdges.head && Math.abs(l.y) < EDGE_TOUCH_EPS_MM) setUnframedEdge('top', 'frame-off');
+      if (!ev.meetingEdges.sill && Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM) setUnframedEdge('bottom', 'frame-off');
+      if (!ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) setUnframedEdge('left', 'frame-off');
+      if (!ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) setUnframedEdge('right', 'frame-off');
     }
     // Sashless exception — applied only to unframedEdges, never to unframedEdgeCount above. A
     // sashless pane's rail-free top/bottom edges are represented solely by sashless:true; forcing
@@ -6669,9 +6695,13 @@ function buildExportElevation(ev, index, linkedPaneIds) {
     // exception now only ever fires for X leaves in practice. A sashless O's own top/bottom follow
     // the ordinary, unexceptional Case 1/3 rules — false with the frame on (nothing sets them),
     // true via Case 3 when hasFrame:false (genuinely no jamb and no sash on that outer edge).
+    // Batch 55 — same exception applied to unframedEdgeReasons, forced null alongside false, per
+    // the invariant that the two fields never disagree.
     if (node.sashless === true) {
       unframedEdges.top = false;
       unframedEdges.bottom = false;
+      unframedEdgeReasons.top = null;
+      unframedEdgeReasons.bottom = null;
     }
 
     // Batch 45 — Case 4 (unframedEdges-only, NOT added to unframedEdgeCount — a second,
@@ -6720,8 +6750,8 @@ function buildExportElevation(ev, index, linkedPaneIds) {
         if (!xOverlaps || !yOverlaps) return;
         const oCenterX = o.x + o.w / 2;
         const lCenterX = l.x + l.w / 2;
-        if (oCenterX < lCenterX) unframedEdges.left = true;
-        else if (oCenterX > lCenterX) unframedEdges.right = true;
+        if (oCenterX < lCenterX) setUnframedEdge('left', 'next-to-sashless');
+        else if (oCenterX > lCenterX) setUnframedEdge('right', 'next-to-sashless');
       });
     }
 
@@ -6747,6 +6777,10 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       // Batch 44 (schema v4) — per-edge breakdown of the same three sources as unframedEdgeCount,
       // with the sashless exception applied (see comment at its computation above).
       unframedEdges,
+      // Batch 55 (schema v5) — which of Case 1-4 unframed each edge, null when framed. See
+      // unframedEdges' own comment above for the invariant (null iff unframedEdges is false) and
+      // setUnframedEdge's comment for why the four Cases can't disagree on the same edge.
+      unframedEdgeReasons,
       // Batch 39 — computed fresh every export by computeCrossElevationLinks(), never stored.
       // null for every pane on a single-elevation system, and for any pane not touching this
       // elevation's own meeting-tagged jamb.
@@ -6901,6 +6935,11 @@ function restoreFromRawState(state) {
 // shape change to `system` itself, not just rawState (which stays unversioned-by-schemaVersion,
 // per batch 37/38).
 //
+// Batch 55 — schemaVersion 5: every pane also gains unframedEdgeReasons, a per-edge breakdown of
+// WHY unframedEdges is true (Case 1-4), alongside the existing boolean. Bumped for the same
+// reason as batches 39/43/44 — an additive shape change to `system`'s own pane list, not to
+// rawState.
+//
 // Returns { ok: true, data } normally, or { ok: false, error } if computeCrossElevationLinks()
 // finds a count mismatch on the two elevations' meeting jambs — per the batch prompt's own "block
 // export on a count mismatch... before any export is built, in both standalone and embed mode"
@@ -6915,7 +6954,7 @@ function buildExportData() {
   return {
     ok: true,
     data: {
-      schemaVersion: 4,
+      schemaVersion: 5,
       system: {
         elevationCount: elevations.length,
         totalFrameLengthMM,
@@ -7104,8 +7143,8 @@ if (isEmbedded) {
   // for 'load') is the message listener registered above, already active by the time this sends.
   // Batch 39 — schemaVersion bumped to 2, matching system's own new shape (must match, per the
   // doc's own statement of what this field means). Batch 43 — bumped again to 3 for the new
-  // per-pane sashless field, same precedent.
-  postToParent({ type: 'ready', schemaVersion: 4 });
+  // per-pane sashless field, same precedent. Batch 55 — bumped to 5 for unframedEdgeReasons.
+  postToParent({ type: 'ready', schemaVersion: 5 });
 }
 </script>
 </body>
