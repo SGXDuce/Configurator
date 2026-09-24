@@ -960,6 +960,15 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       perimeter term; unframedEdges/unframedEdgeCount/unframedEdgeReasons/meeting-jamb detection/
 //       computeCrossElevationLinks/the existing widthMM/xMM correction all untouched (confirmed by
 //       diff). No schemaVersion bump. Full detail in Configurator_Project_Summary.md §11 item 3q.
+// 58:   fix batch 57's own bug: computeSlidingAssemblyVerticalCorrections was applying tuckInV
+//       row-uniformly, including to O (fixed, no sash) — person-confirmed an O leaf has no sash
+//       mechanism to tuck into a head/sill track at all, so it must always stay flush with the
+//       drawn opening geometry. New per-leaf gate: node.type === 'fixed' now gets an identity
+//       correction ({y: l.y, h: l.h}) before the touch checks, full stop, regardless of tuckInV —
+//       only a real sash leaf (X) ever absorbs topStrip/bottomStrip. Deliberately NOT applied to
+//       computeSlidingAssemblyLeafCorrections (the width/jamb correction) — O legitimately gets
+//       jamb tuck-in for WIDTH (batch 48's own worked example), only the vertical axis exempts it.
+//       Full detail in Configurator_Project_Summary.md §11 item 3r.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -6505,6 +6514,14 @@ function computeSlidingAssemblyLeafCorrections(leaves, ev, nodeRects) {
 // three-way FRAME_TUCKIN_MM/SASHLESS_FRAME_TUCKIN_MM/0 choice — person-confirmed that a sashless
 // row's vertical tuck-in is 0, not some smaller nonzero figure the way its horizontal tuck-in is;
 // no sashless-nonzero branch carried over here.
+//
+// Batch 58 — per-leaf gate, NOT row-uniform: a fixed (O) leaf has no sash at all, so there is no
+// sash mechanism to tuck into a head/sill track — its height always stays flush with the drawn
+// opening geometry, identity-corrected, regardless of tuckInV (sashless or not, framed or not).
+// Only a real sash leaf (non-fixed, i.e. X) ever absorbs topStrip/bottomStrip. Deliberately NOT
+// applied to computeSlidingAssemblyLeafCorrections (the width/jamb correction) — O legitimately
+// gets jamb tuck-in for WIDTH (batch 48's own worked example: O drawn 435mm, real 475mm); only the
+// vertical/head-sill axis exempts O, per this batch's own person-confirmation.
 function computeSlidingAssemblyVerticalCorrections(leaves, ev, nodeRects) {
   const ranges = [];
   collectSlidingAssemblyRanges(ev.root, [], ranges);
@@ -6521,6 +6538,10 @@ function computeSlidingAssemblyVerticalCorrections(leaves, ev, nodeRects) {
     const tuckInV = (ev.hasFrame && !sashless) ? SLIDING_HEIGHT_TUCKIN_MM : 0;
     const topStrip = tuckInV / 2, bottomStrip = tuckInV / 2;
     assemblyLeaves.forEach(l => {
+      if (l.node.type === 'fixed') {
+        corrections.set(l, { y: l.y, h: l.h });
+        return;
+      }
       const touchesTop = Math.abs(l.y - rowRect.y) < EDGE_TOUCH_EPS_MM;
       const touchesBottom = Math.abs(l.y + l.h - (rowRect.y + rowRect.h)) < EDGE_TOUCH_EPS_MM;
       corrections.set(l, {
