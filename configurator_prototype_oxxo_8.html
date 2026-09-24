@@ -871,6 +871,64 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       correctly both times with no false staleness in between; a marker with panelWidthsMM but
 //       no sectionDrawnWidthsMM (simulating a batch-51/52 rawState) is treated as not-stale and
 //       exports using the stored panelWidthsMM directly, not the batch-48 X-based reconstruction.
+// 54:   carry sashless through a section split; fix reopen's sashless check to look past a
+//       subdivided section's own top node.
+//       Problem A: cloneForSplit (builds the two new children when a leaf is split) carried type,
+//       sash edges, hinge/slide direction, and louvre fields — but not sashless. Splitting a
+//       sashless leaf (a sashless sliding-window X) silently dropped the flag from both resulting
+//       panes.
+//       Problem B: two reopen call sites determined "is this sliding assembly sashless" by
+//       checking .sashless directly on whatever node getAssemblyLeafNodesInOrder returns for each
+//       SECTION's own path (getAssemblyPresetCurrentState's reopen prefill,
+//       confirmAssemblyEdit's reopen validation). Once a section is subdivided, that node is a
+//       split, never filled — .sashless is undefined on it regardless of what its own children
+//       carry. Fixing A alone does not fix this: neither check ever descended into a subdivided
+//       section to find its actual leaves. Export's own equivalent check
+//       (computeSlidingAssemblyLeafCorrections' assemblyLeaves.some(l => l.node.sashless ===
+//       true)) is different in kind — it already operates over real per-leaf export records
+//       (collectExportGeometry recurses to kind:'filled' before ever pushing to leavesOut, so a
+//       leaf nested inside a subdivided section is already there directly) — so export was fixed
+//       by A alone; reopen was not.
+//       (1) cloneForSplit now carries sashless conditionally, same "absent means false"
+//       convention as every other reader of this flag — a non-sashless split still gets no
+//       sashless key at all.
+//       (2) New findAnySashlessLeaf(node): generic recursive walk, same children[0]/children[1]
+//       shape as collectSlidingAssemblyRanges — filled returns its own sashless flag, empty
+//       returns false, split/sashSplit recurses into both children. No path-awareness needed,
+//       only ever called on an already-located section's own node. Byte-identical to the old
+//       direct check for an unsplit section.
+//       (3) Both reopen call sites' `.some(l => l.sashless === true)` replaced with `.some(l =>
+//       findAnySashlessLeaf(l))`.
+//       Not changed: export's own sashless check (already correct, confirmed above — pointing it
+//       at findAnySashlessLeaf too would be redundant indirection with no behavioural difference,
+//       since every element it iterates is already a real leaf record; not done).
+//       computeSlidingAssemblyLeafCorrections' tuck-in determination, Case 4 gate, unframedEdges,
+//       meeting-jamb detection, cross-elevation matching, on-screen drawing, double-hung.
+//       Investigated, not fixed: splitting a sashless leaf, then Clearing one resulting pane, then
+//       re-typing it (e.g. as Fixed) loses sashless — confirmed by tracing both steps. Clear
+//       ({...emptyNode(), ...locked}) only ever carries forward the sash*Locked flags (for the
+//       documented, narrow reason that a silicone-joint restriction on a neighbour must survive
+//       regardless of what this pane becomes) — it already drops type, hingeEdge, slideDirection,
+//       and every other field just as deliberately as it now drops sashless; makeTypeButton's own
+//       fresh newNode literal never reads sashless off the node it's replacing, same as it never
+//       reads type/hingeEdge/slideDirection off a kind:'empty' predecessor either. This is
+//       consistent with Clear's own existing, deliberate convention (wipe the pane back to blank,
+//       preserve only the one field with an external physical reason to survive) — not a new gap
+//       this batch introduces or one sharing cloneForSplit's own "just forgot to copy this field"
+//       shape, so not fixed here.
+//       Verified against the real page in headless Chrome: every batch-49 through batch-53 test
+//       case (23 total) replayed identically. Directly confirmed the pre-batch-54 bug before
+//       fixing it, not just assumed: on the actual committed HEAD code, splitting a sashless
+//       OX-win's X vertically leaves both resulting leaves with sashless:false, and reopening
+//       "Edit assembly widths" then confirming unchanged fails with "total 876mm, but this region
+//       is 910mm wide" — a 34mm gap, exactly FRAME_TUCKIN_MM(40) − SASHLESS_FRAME_TUCKIN_MM(6),
+//       confirming the wrong (non-sashless) tuck-in constant was the cause. On the fixed code: the
+//       same split leaves both panes sashless:true; export's Case 4 still fires on the fixed O
+//       neighbour's own edge touching the subdivided sashless X; reopening prefills 458/518
+//       unchanged and confirming now passes cleanly. Same result for a transom (horizontal) split
+//       instead of a vertical one. A non-sashless assembly split the same way stays
+//       sashless-absent throughout, no regression. Split+Clear+re-type confirmed (not assumed) to
+//       lose sashless, per the "investigated, not fixed" note above.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -1312,9 +1370,16 @@ function setNode(path, newNode) {
 // unframed-joint removal requirement — reusing this same generic function does that for free,
 // with no joint-specific removal code needed. confirmUnframedJoint (below) applies its own lock
 // explicitly, after cloning, rather than through this function.
+// Batch 54 — carries `sashless` onto both children too, same as every other field above:
+// splitting a sashless leaf (a sashless sliding-window X, or either leaf of a sashless
+// double-hung unit) silently dropped the flag from both resulting panes before this, since it
+// was the one field this function never copied at all. Conditional, not a plain `node.sashless`
+// assignment, so a non-sashless split still gets no `sashless` key whatsoever — same "absent
+// means false" convention every reader of this flag (glazedAreaM2, unframedEdges' Case 4,
+// buildExportElevation's own `sashless: !!node.sashless`) already relies on.
 function cloneForSplit(node) {
   if (node.kind === 'filled') {
-    return {
+    const next = {
       kind: 'filled',
       type: node.type,
       productClass: node.productClass,
@@ -1327,6 +1392,8 @@ function cloneForSplit(node) {
       bladeWidthMM: node.bladeWidthMM,
       bladeLengthMM: node.bladeLengthMM
     };
+    if (node.sashless) next.sashless = true;
+    return next;
   }
   return emptyNode();
 }
@@ -1434,7 +1501,13 @@ function getAssemblyPresetCurrentState(markedPath, sectionCount, pattern, id) {
     // (no ev.pendingSplit.sashless exists during a reopen — no picker/checkbox step in this flow —
     // so it's read directly off the existing live leaves, which already carry sashless:true from
     // whichever preset run originally built them).
-    const sashless = getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id).some(l => l.sashless === true);
+    // Batch 54 — findAnySashlessLeaf, not a direct `.sashless` check: getAssemblyLeafNodesInOrder
+    // returns each SECTION's own top node, which is a `split`/`sashSplit` (no `.sashless` at all)
+    // once that section has been subdivided — a direct check silently read undefined/false for a
+    // subdivided sashless section, so a reopen on it fed the wrong (non-sashless) tuck-in figure
+    // into the total check. Byte-identical to before for an unsplit section (findAnySashlessLeaf
+    // on a `filled` node is just its own sashless flag).
+    const sashless = getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id).some(l => findAnySashlessLeaf(l));
     // Batch 52 — if an on-drawing edit resized this row without going through confirmAssemblyEdit
     // (a moved flush-join bar between sections, or a changed overall width/height — see
     // isPanelWidthsStale's own comment), the stored panelWidthsMM no longer matches reality.
@@ -4500,6 +4573,24 @@ function getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id) {
   return nodes;
 }
 
+// Batch 54 — generic recursive "does any leaf under this node carry sashless:true" walk, same
+// children[0]/children[1] recursion shape as collectSlidingAssemblyRanges above (no path-
+// awareness needed — this only ever runs on a single already-located section's own node, not the
+// whole tree). Needed because getAssemblyLeafNodesInOrder returns each SECTION's own top node,
+// which is `filled` only when that section has never been subdivided — a bar or transom split
+// replaces it with a `split`/`sashSplit` node, and `.sashless` is undefined on a split node
+// regardless of what its own children carry (cloneForSplit now copies `sashless` onto a leaf's
+// children when THEY split, batch 54's other fix, but that does nothing to make a `split` node
+// itself report the flag). A plain `.sashless === true` check on a section's own top node — the
+// two reopen call sites' old behaviour — silently read `undefined` for any subdivided sashless
+// section. For an unsplit leaf this is byte-identical to that old check (kind:'filled' just
+// returns its own sashless flag).
+function findAnySashlessLeaf(node) {
+  if (node.kind === 'filled') return node.sashless === true;
+  if (node.kind === 'empty') return false;
+  return findAnySashlessLeaf(node.children[0]) || findAnySashlessLeaf(node.children[1]);
+}
+
 // Batch 12 — resizing an already-built assembly preset. Unlike confirmAssemblyPreset (which
 // builds fresh leaves), this preserves each section's EXISTING leaf data exactly (type,
 // productClass, direction, sash values, and anything nested under it) — only the split chain's
@@ -4538,7 +4629,14 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
   // buildAssemblyPresetTree's own comment on why this flag survives a reopen untouched: this same
   // rebuild only re-wraps the existing leaf object references, it never re-stamps or clones them).
   const existingLeaves = getAssemblyLeafNodesInOrder(markedPath, sectionCount, pattern, id);
-  const sashless = existingLeaves.some(l => l.sashless === true);
+  // Batch 54 — findAnySashlessLeaf, not a direct `.sashless` check: existingLeaves are each
+  // SECTION's own top node despite the variable's name (also fed straight into
+  // buildSlidingWinOverlapTree below, which is exactly why a subdivided section's own `split`
+  // node has always been a valid element here) — a direct `.sashless` check is undefined on a
+  // `split`/`sashSplit` node regardless of what its own children carry, so this silently used the
+  // wrong (non-sashless) tuck-in figure for the total check below once a sashless section had
+  // been subdivided. Byte-identical to before for an unsplit section.
+  const sashless = existingLeaves.some(l => findAnySashlessLeaf(l));
   const enteredTotal = isSlidingOverlapId(id, pattern)
     ? computeSlidingWinTotalWidth(pattern, sectionWidths, sashless)
     : sectionWidths.reduce((a, b) => a + b, 0) + (sectionCount - 1) * mullionThickness;
