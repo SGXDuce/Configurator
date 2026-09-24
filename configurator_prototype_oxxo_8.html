@@ -960,6 +960,30 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       perimeter term; unframedEdges/unframedEdgeCount/unframedEdgeReasons/meeting-jamb detection/
 //       computeCrossElevationLinks/the existing widthMM/xMM correction all untouched (confirmed by
 //       diff). No schemaVersion bump. Full detail in Configurator_Project_Summary.md §11 item 3q.
+// 58:   fix batch 57's own bug: computeSlidingAssemblyVerticalCorrections was applying tuckInV
+//       row-uniformly, including to O (fixed, no sash) — person-confirmed an O leaf has no sash
+//       mechanism to tuck into a head/sill track at all, so it must always stay flush with the
+//       drawn opening geometry. New per-leaf gate: node.type === 'fixed' now gets an identity
+//       correction ({y: l.y, h: l.h}) before the touch checks, full stop, regardless of tuckInV —
+//       only a real sash leaf (X) ever absorbs topStrip/bottomStrip. Deliberately NOT applied to
+//       computeSlidingAssemblyLeafCorrections (the width/jamb correction) — O legitimately gets
+//       jamb tuck-in for WIDTH (batch 48's own worked example), only the vertical axis exempts it.
+//       Full detail in Configurator_Project_Summary.md §11 item 3r.
+// 59:   double-hung jamb (widthMM/xMM) tuck-in correction, per-unit. New DOUBLE_HUNG_JAMB_TUCKIN_MM
+//       (40, person-confirmed: 20mm/side), separate from FRAME_TUCKIN_MM despite the matching
+//       value, same precedent as SLIDING_HEIGHT_TUCKIN_MM — untouched: getDoubleHungOverlapMM's own
+//       legitimate FRAME_TUCKIN_MM reuse, a different axis. New collectDoubleHungAssemblyRanges
+//       (mirrors collectSlidingAssemblyRanges, gated on detectPresetFamily==='double-hung'), new
+//       collectDoubleHungUnitPaths (structural walk: sashSplit = one unit, split = real mullion,
+//       recurse both sides), new computeDoubleHungWidthCorrections — per UNIT, not per row: each
+//       unit corrected against its OWN drawn rect, so a middle DDD unit (mullion both sides, no
+//       true jamb) still gets the full 40mm, not zero. Wired into buildExportElevation as a second
+//       fallback after slidingCorrections (the two never overlap — mutually exclusive families) —
+//       feeds widthMM/xMM/areaM2/visibleGlazedAreaM2/frameLengthMM's sash-perimeter term, same five
+//       fields as the sliding fix. heightMM/yMM (already correct, different axis),
+//       unframedEdges/unframedEdgeCount/unframedEdgeReasons, meeting-jamb detection, and
+//       computeCrossElevationLinks all untouched (confirmed by diff). No schemaVersion bump. Full
+//       detail in Configurator_Project_Summary.md §11 item 3s.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5527,6 +5551,15 @@ const SASHLESS_FRAME_TUCKIN_MM = 6;
 // figure must NOT be assumed to apply to the other.
 const SLIDING_HEIGHT_TUCKIN_MM = 40;
 
+// DOUBLE_HUNG_JAMB_TUCKIN_MM — person-confirmed: a framed double-hung unit's panel also tucks
+// into the LEFT/RIGHT jamb (or an adjacent unit's own mullion cavity), 20mm per side = 40mm total
+// per unit. Deliberately a SEPARATE constant from FRAME_TUCKIN_MM, not a reuse of it — same
+// precedent as SLIDING_HEIGHT_TUCKIN_MM just above and PANE_EDGE_MATCH_TOL_MM vs
+// EDGE_TOUCH_EPS_MM — even though double-hung's own VERTICAL overlap (getDoubleHungOverlapMM)
+// already legitimately reuses FRAME_TUCKIN_MM directly, on a different axis, for a different
+// reason (the meeting-rail overlap's own tuck-in term), and is untouched by this constant.
+const DOUBLE_HUNG_JAMB_TUCKIN_MM = 40;
+
 // Batch 22 — casement/awning sash width prefill, solved against the real selected region width
 // (rect.w), same principle as the sliding prefill fix (batch 20): a catalog total is a different
 // number from the region actually being divided, so equally splitting a catalog total (the old
@@ -6505,6 +6538,14 @@ function computeSlidingAssemblyLeafCorrections(leaves, ev, nodeRects) {
 // three-way FRAME_TUCKIN_MM/SASHLESS_FRAME_TUCKIN_MM/0 choice — person-confirmed that a sashless
 // row's vertical tuck-in is 0, not some smaller nonzero figure the way its horizontal tuck-in is;
 // no sashless-nonzero branch carried over here.
+//
+// Batch 58 — per-leaf gate, NOT row-uniform: a fixed (O) leaf has no sash at all, so there is no
+// sash mechanism to tuck into a head/sill track — its height always stays flush with the drawn
+// opening geometry, identity-corrected, regardless of tuckInV (sashless or not, framed or not).
+// Only a real sash leaf (non-fixed, i.e. X) ever absorbs topStrip/bottomStrip. Deliberately NOT
+// applied to computeSlidingAssemblyLeafCorrections (the width/jamb correction) — O legitimately
+// gets jamb tuck-in for WIDTH (batch 48's own worked example: O drawn 435mm, real 475mm); only the
+// vertical/head-sill axis exempts O, per this batch's own person-confirmation.
 function computeSlidingAssemblyVerticalCorrections(leaves, ev, nodeRects) {
   const ranges = [];
   collectSlidingAssemblyRanges(ev.root, [], ranges);
@@ -6521,11 +6562,96 @@ function computeSlidingAssemblyVerticalCorrections(leaves, ev, nodeRects) {
     const tuckInV = (ev.hasFrame && !sashless) ? SLIDING_HEIGHT_TUCKIN_MM : 0;
     const topStrip = tuckInV / 2, bottomStrip = tuckInV / 2;
     assemblyLeaves.forEach(l => {
+      if (l.node.type === 'fixed') {
+        corrections.set(l, { y: l.y, h: l.h });
+        return;
+      }
       const touchesTop = Math.abs(l.y - rowRect.y) < EDGE_TOUCH_EPS_MM;
       const touchesBottom = Math.abs(l.y + l.h - (rowRect.y + rowRect.h)) < EDGE_TOUCH_EPS_MM;
       corrections.set(l, {
         y: l.y - (touchesTop ? topStrip : 0),
         h: l.h + (touchesTop ? topStrip : 0) + (touchesBottom ? bottomStrip : 0)
+      });
+    });
+  });
+  return corrections;
+}
+
+// Batch 59 — finds every double-hung marked tree in the tree, mirroring collectSlidingAssemblyRanges
+// (batch 48) but gated on detectPresetFamily(ref.pattern) === 'double-hung' instead of
+// isSlidingOverlapId — reuses the existing, already-confirmed-globally-unique family lookup rather
+// than a new regex. Also carries the matched NODE itself (not just its path), since
+// collectDoubleHungUnitPaths below needs to walk that subtree directly. Continues recursing into
+// both children after a match (never returns early) for the same reason batch 48 does — a preset
+// can be built inside a section of another preset.
+function collectDoubleHungAssemblyRanges(node, path, rangesOut) {
+  if (node.kind === 'empty' || node.kind === 'filled') return;
+  const ref = node.assemblyPresetRef;
+  if (ref && detectPresetFamily(ref.pattern) === 'double-hung') rangesOut.push({ path, ref, node });
+  collectDoubleHungAssemblyRanges(node.children[0], path.concat(0), rangesOut);
+  collectDoubleHungAssemblyRanges(node.children[1], path.concat(1), rangesOut);
+}
+
+// Batch 59 — given a double-hung marked tree's own root node (as found by
+// collectDoubleHungAssemblyRanges above), walks it to find each UNIT's own path, relative to that
+// root. A unit is a single buildDoubleHungUnit() subtree — a `sashSplit` node (its top/bottom
+// vertical-slider leaves are its own children, not separate units) — so hitting `kind:'sashSplit'`
+// means "this is one whole unit," pushed and not recursed into further. `kind:'split'` is
+// foldSectionsIntoSplits' own real mullion wrapping multiple units together (DD/DDD) — recursed
+// into on both sides. Derives unit boundaries structurally, from the actual tree shape, rather than
+// hand-deriving foldSectionsIntoSplits' own fold order — stays correct even if that function's
+// shape ever changes, same reasoning batch 51 used for section paths on the sliding side.
+function collectDoubleHungUnitPaths(node, path, out) {
+  if (node.kind === 'sashSplit') { out.push(path); return; }
+  if (node.kind === 'split') {
+    collectDoubleHungUnitPaths(node.children[0], path.concat(0), out);
+    collectDoubleHungUnitPaths(node.children[1], path.concat(1), out);
+  }
+}
+
+// Batch 59 — real panel WIDTH for double-hung units, mirroring computeSlidingAssemblyLeafCorrections
+// (batch 48) in spirit but a different shape: PER-UNIT, not per-row. Person-confirmed: a framed
+// double-hung unit's panel tucks into its own left/right side by DOUBLE_HUNG_JAMB_TUCKIN_MM/2 each,
+// regardless of whether that side is a true outer jamb or an adjacent unit's own mullion cavity — a
+// middle unit in a DDD row (mullion on both sides, no true jamb at all) still gets the FULL 40mm,
+// not zero, because each unit is corrected independently against its own drawn rect, never against
+// the whole assembly's outer rect the way the sliding-row width correction is. `sashless` is
+// confirmed all-or-nothing across a double-hung preset (batch 42 — one checkbox, no per-unit
+// choice), so `.some()` is safe here, same as the vertical correction (batch 57) already assumes for
+// its own sashless check — checked per assembly, not assumed to be true without looking.
+//
+// Deliberately non-mutating and read-only, same convention as every other correction map in this
+// file — feeds ONLY widthMM/xMM/areaM2/visibleGlazedAreaM2/frameLengthMM's sash-perimeter term (via
+// buildExportElevation's own realGeom fallback chain); heightMM/yMM (already correct, a different
+// axis — getDoubleHungOverlapMM/DOUBLE_HUNG_OVERLAP_MM), unframedEdges/unframedEdgeCount/
+// unframedEdgeReasons, meeting-jamb touch detection, and computeCrossElevationLinks are all
+// completely untouched by this function's existence.
+function computeDoubleHungWidthCorrections(leaves, ev, nodeRects) {
+  const ranges = [];
+  collectDoubleHungAssemblyRanges(ev.root, [], ranges);
+  const corrections = new Map();
+  ranges.forEach(({ path: markedPath, node: markedNode }) => {
+    const assemblyLeaves = leaves.filter(l => pathStartsWith(l.path, markedPath));
+    const sashless = assemblyLeaves.some(l => l.node.sashless === true);
+    const tuckInH = (ev.hasFrame && !sashless) ? DOUBLE_HUNG_JAMB_TUCKIN_MM : 0;
+    const leftStrip = tuckInH / 2, rightStrip = tuckInH / 2;
+    const unitPaths = [];
+    collectDoubleHungUnitPaths(markedNode, [], unitPaths);
+    unitPaths.forEach(unitPath => {
+      const fullUnitPath = markedPath.concat(unitPath);
+      const unitRect = nodeRects[pathKey(fullUnitPath)];
+      if (!unitRect) {
+        throw new Error('computeDoubleHungWidthCorrections: a double-hung unit (marked path [' +
+          markedPath.join(',') + '], unit path [' + fullUnitPath.join(',') + ']) has no drawn rect — ' +
+          'the tree and nodeRects have gone out of sync.');
+      }
+      assemblyLeaves.filter(l => pathStartsWith(l.path, fullUnitPath)).forEach(l => {
+        const touchesLeft = Math.abs(l.x - unitRect.x) < EDGE_TOUCH_EPS_MM;
+        const touchesRight = Math.abs(l.x + l.w - (unitRect.x + unitRect.w)) < EDGE_TOUCH_EPS_MM;
+        corrections.set(l, {
+          x: l.x - (touchesLeft ? leftStrip : 0),
+          w: l.w + (touchesLeft ? leftStrip : 0) + (touchesRight ? rightStrip : 0)
+        });
       });
     });
   });
@@ -6686,16 +6812,25 @@ function buildExportElevation(ev, index, linkedPaneIds) {
   // existing widthMM/xMM correction all keep reading l.y/l.h directly, unaffected.
   const verticalCorrections = computeSlidingAssemblyVerticalCorrections(leaves, ev, nodeRects);
 
+  // Batch 59 — real panel WIDTH for double-hung units, same five downstream fields as
+  // slidingCorrections above (widthMM/xMM/areaM2/visibleGlazedAreaM2/frameLengthMM's sash-perimeter
+  // term), just for the double-hung family instead of sliding-window/door. A separate, read-only
+  // map, per-unit rather than per-row — see computeDoubleHungWidthCorrections' own comment.
+  const doubleHungCorrections = computeDoubleHungWidthCorrections(leaves, ev, nodeRects);
+
   let frameLengthMM = 0;
   const panes = leaves.map(l => {
     const node = l.node;
     const isFixed = node.type === 'fixed';
     const sashEdges = isFixed ? { top: 0, bottom: 0, left: 0, right: 0 } : getSashEdges(node);
-    // Batch 48 — realGeom is {x: l.x, w: l.w} for every leaf NOT part of a sliding assembly
-    // (identity, no change), or the corrected real panel {x, w} for one that is. Only this
+    // Batch 48 — realGeom is {x: l.x, w: l.w} for every leaf NOT part of a sliding assembly or
+    // (batch 59) a double-hung assembly (identity, no change), or the corrected real panel {x, w}
+    // for one that is. slidingCorrections and doubleHungCorrections never both have an entry for
+    // the same leaf — sliding-window/door and double-hung are mutually exclusive families (a leaf
+    // belongs to at most one assembly-preset marker), so this fallback chain is safe. Only this
     // variable feeds widthMM/xMM/areaM2/visibleGlazedAreaM2 below — every other calculation in
     // this function keeps using `l` (the original drawn leaf) directly, untouched.
-    const realGeom = slidingCorrections.get(l) || { x: l.x, w: l.w };
+    const realGeom = slidingCorrections.get(l) || doubleHungCorrections.get(l) || { x: l.x, w: l.w };
     const realGeomV = verticalCorrections.get(l) || { y: l.y, h: l.h };
     const areaM2 = (realGeom.w * realGeomV.h) / 1e6;
     const visibleGlazedAreaM2 = glazedAreaM2({ w: realGeom.w, h: realGeomV.h, node: l.node });
