@@ -949,6 +949,17 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       invariant that guard's own argument relies on — never tested before, exercised for the
 //       first time via a one-off headless-Chrome script (55 trees, 173 leaves, zero violations).
 //       Full detail in Configurator_Project_Summary.md §11 item 3p.
+// 57:   sliding-window/door vertical (head/sill) tuck-in correction — fills the "batch 48, open
+//       gap" note. New SLIDING_HEIGHT_TUCKIN_MM (40, person-confirmed: 20mm head + 20mm sill) —
+//       deliberately a separate constant from FRAME_TUCKIN_MM despite matching its value, same
+//       precedent as PANE_EDGE_MATCH_TOL_MM vs EDGE_TOUCH_EPS_MM. New
+//       computeSlidingAssemblyVerticalCorrections mirrors computeSlidingAssemblyLeafCorrections but
+//       on the y-axis, using the marked row's own single drawn rect (no per-section folding exists
+//       vertically), binary tuck-in (0 or 40, no sashless-nonzero branch). Wired into
+//       buildExportElevation for heightMM/yMM/areaM2/visibleGlazedAreaM2/frameLengthMM's sash-
+//       perimeter term; unframedEdges/unframedEdgeCount/unframedEdgeReasons/meeting-jamb detection/
+//       computeCrossElevationLinks/the existing widthMM/xMM correction all untouched (confirmed by
+//       diff). No schemaVersion bump. Full detail in Configurator_Project_Summary.md §11 item 3q.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -5507,6 +5518,15 @@ const SASHLESS_STILE_MM = 10;
 // keep using the real 40mm tuck-in completely unchanged.
 const SASHLESS_FRAME_TUCKIN_MM = 6;
 
+// SLIDING_HEIGHT_TUCKIN_MM — person-confirmed (Duce): a framed, non-sashless sliding-window/door
+// row's panel also tucks in vertically, 20mm at the head + 20mm at the sill = 40mm total. This
+// value happens to equal FRAME_TUCKIN_MM, but is a SEPARATE, deliberately non-shared constant —
+// same precedent as PANE_EDGE_MATCH_TOL_MM being kept separate from EDGE_TOUCH_EPS_MM despite the
+// two constants being built for different reasons. The match here is a coincidence (both happen to
+// be "20mm per frame-touching edge, 2 edges"), not a shared derivation — a future change to either
+// figure must NOT be assumed to apply to the other.
+const SLIDING_HEIGHT_TUCKIN_MM = 40;
+
 // Batch 22 — casement/awning sash width prefill, solved against the real selected region width
 // (rect.w), same principle as the sliding prefill fix (batch 20): a catalog total is a different
 // number from the region actually being divided, so equally splitting a catalog total (the old
@@ -6465,6 +6485,53 @@ function computeSlidingAssemblyLeafCorrections(leaves, ev, nodeRects) {
   return corrections;
 }
 
+// Fills the open gap flagged in configurator_export_schema.md ("batch 48, open gap") — a sliding-
+// window/door row's panel also tucks in vertically (head + sill), mirroring the width correction
+// above, but on the row's own single top/bottom boundary only. Unlike the width correction, there
+// is no per-section fold to worry about: `collectSlidingAssemblyRanges` finds the same marked rows
+// (sliding-window/door only, isSlidingOverlapId-gated — double-hung's own "D"/"DD"/"DDD" patterns
+// never match that regex, confirmed by reading it directly, so double-hung's own vertical tuck-in
+// remains a separate, still-open item), and each row's own drawn rect at
+// `nodeRects[pathKey(markedPath)]` is exactly the row's one top/bottom boundary — there's no
+// overlap-join folding on the vertical axis the way there is horizontally, so unlike the width
+// correction this never needs a per-SECTION rect. That rect is correct even when the row itself
+// sits nested inside a vertically-subdivided parent (a rare but tree-legal case): every call in
+// collectExportGeometry's own recursion passes accumulated, absolute x/y down to its children (see
+// its own body — a 'v'-axis split still passes the same accumulated `y`, only x/w change; an 'h'-
+// axis split accumulates y itself), so nodeRects entries are always absolute-in-elevation
+// coordinates, never region-relative, regardless of nesting depth or axis.
+//
+// tuckInV is deliberately binary (0 or SLIDING_HEIGHT_TUCKIN_MM), unlike the width correction's
+// three-way FRAME_TUCKIN_MM/SASHLESS_FRAME_TUCKIN_MM/0 choice — person-confirmed that a sashless
+// row's vertical tuck-in is 0, not some smaller nonzero figure the way its horizontal tuck-in is;
+// no sashless-nonzero branch carried over here.
+function computeSlidingAssemblyVerticalCorrections(leaves, ev, nodeRects) {
+  const ranges = [];
+  collectSlidingAssemblyRanges(ev.root, [], ranges);
+  const corrections = new Map();
+  ranges.forEach(({ path: markedPath }) => {
+    const rowRect = nodeRects[pathKey(markedPath)];
+    if (!rowRect) {
+      throw new Error('computeSlidingAssemblyVerticalCorrections: a sliding assembly (marked path [' +
+        markedPath.join(',') + ']) has no drawn rect at its own path — the tree and nodeRects have gone ' +
+        'out of sync.');
+    }
+    const assemblyLeaves = leaves.filter(l => pathStartsWith(l.path, markedPath));
+    const sashless = assemblyLeaves.some(l => l.node.sashless === true);
+    const tuckInV = (ev.hasFrame && !sashless) ? SLIDING_HEIGHT_TUCKIN_MM : 0;
+    const topStrip = tuckInV / 2, bottomStrip = tuckInV / 2;
+    assemblyLeaves.forEach(l => {
+      const touchesTop = Math.abs(l.y - rowRect.y) < EDGE_TOUCH_EPS_MM;
+      const touchesBottom = Math.abs(l.y + l.h - (rowRect.y + rowRect.h)) < EDGE_TOUCH_EPS_MM;
+      corrections.set(l, {
+        y: l.y - (touchesTop ? topStrip : 0),
+        h: l.h + (touchesTop ? topStrip : 0) + (touchesBottom ? bottomStrip : 0)
+      });
+    });
+  });
+  return corrections;
+}
+
 // Per-elevation-index resolution of overallW/overallH — ONLY the currently-active elevation's
 // object has stale values (the live source of truth for it is the frameW/frameH DOM inputs while
 // it's active; see setActiveElevationIndex/newElevation's own comments). Every other elevation
@@ -6612,6 +6679,13 @@ function buildExportElevation(ev, index, linkedPaneIds) {
   // visibleGlazedAreaM2, and frameLengthMM's sash-perimeter term.
   const slidingCorrections = computeSlidingAssemblyLeafCorrections(leaves, ev, nodeRects);
 
+  // Fills the "batch 48, open gap" note in configurator_export_schema.md — the same real-panel-size
+  // correction as slidingCorrections above, but on the vertical (head/sill) axis instead of the
+  // horizontal (jamb) one. A separate, read-only map for the same reason slidingCorrections is one:
+  // unframedEdgeCount/unframedEdges/meeting-jamb touch detection/computeCrossElevationLinks/the
+  // existing widthMM/xMM correction all keep reading l.y/l.h directly, unaffected.
+  const verticalCorrections = computeSlidingAssemblyVerticalCorrections(leaves, ev, nodeRects);
+
   let frameLengthMM = 0;
   const panes = leaves.map(l => {
     const node = l.node;
@@ -6622,16 +6696,17 @@ function buildExportElevation(ev, index, linkedPaneIds) {
     // variable feeds widthMM/xMM/areaM2/visibleGlazedAreaM2 below — every other calculation in
     // this function keeps using `l` (the original drawn leaf) directly, untouched.
     const realGeom = slidingCorrections.get(l) || { x: l.x, w: l.w };
-    const areaM2 = (realGeom.w * l.h) / 1e6;
-    const visibleGlazedAreaM2 = glazedAreaM2({ w: realGeom.w, h: l.h, node: l.node });
+    const realGeomV = verticalCorrections.get(l) || { y: l.y, h: l.h };
+    const areaM2 = (realGeom.w * realGeomV.h) / 1e6;
+    const visibleGlazedAreaM2 = glazedAreaM2({ w: realGeom.w, h: realGeomV.h, node: l.node });
 
     // Part 3 — top-down internal coords -> bottom-left corner from the true main origin
     // (mainOrigin(), never ev.customOrigin), Y increasing upward. xMM uses the corrected real
-    // panel x (batch 48) — the physical start of the panel, including any part running into a
-    // jamb; yMM is untouched (item 3, this batch — sliding panel height is still the opening
-    // height, an open gap, not addressed here).
+    // panel x (batch 48); yMM now uses the corrected real panel y/h (fills the "batch 48, open
+    // gap" note — a sliding panel's real height also tucks into the head/sill track, mirroring
+    // the width correction).
     const xMM = realGeom.x + m.jambL;
-    const yMM = openingH + m.sill - (l.y + l.h);
+    const yMM = openingH + m.sill - (realGeomV.y + realGeomV.h);
 
     // Part 4 — unframedEdgeCount: Case 2 (sash*Locked, silicone joint to a neighbour) and Case 1
     // (this leaf's edge touches a meeting-tagged jamb) are structurally mutually exclusive per
@@ -6777,7 +6852,7 @@ function buildExportElevation(ev, index, linkedPaneIds) {
 
     // Part 5 component 1 — every non-fixed pane's own sash perimeter. Uses the real panel width
     // (batch 48) — the sash perimeter is a property of the panel itself, same as areaM2 above.
-    if (!isFixed) frameLengthMM += 2 * (realGeom.w + l.h);
+    if (!isFixed) frameLengthMM += 2 * (realGeom.w + realGeomV.h);
 
     return {
       id: l.label,
@@ -6789,7 +6864,7 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       bladeLengthMM: node.bladeLengthMM != null ? node.bladeLengthMM : null,
       xMM, yMM,
       widthMM: realGeom.w,
-      heightMM: l.h,
+      heightMM: realGeomV.h,
       areaM2,
       visibleGlazedAreaM2,
       sashEdgesMM: { top: sashEdges.top, bottom: sashEdges.bottom, left: sashEdges.left, right: sashEdges.right },
