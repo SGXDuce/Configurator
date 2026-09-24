@@ -929,6 +929,26 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       instead of a vertical one. A non-sashless assembly split the same way stays
 //       sashless-absent throughout, no regression. Split+Clear+re-type confirmed (not assumed) to
 //       lose sashless, per the "investigated, not fixed" note above.
+// 55:   per-edge unframedEdgeReasons (schemaVersion 5): {top,bottom,left,right}, null when framed,
+//       else naming which of Cases 1-4 unframed it ('angled-joint'/'silicone-flat'/'frame-off'/
+//       'next-to-sashless'). New setUnframedEdge convergence point all four Cases now go through,
+//       throws if two Cases ever disagree about the same edge. Investigated (not assumed) whether
+//       Case 2 and Case 4 can collide — the stated premise (sash*Locked requires a real sash) is
+//       wrong, but the conclusion holds anyway: Case 2's edge is always a brand-new interior
+//       boundary, Case 4's is always a pre-existing outer overlap edge. Full detail in
+//       configurator_export_schema.md and Configurator_Project_Summary.md §11 item 3o.
+// 56:   fixes a batch-numbering collision from this same session: buildExportDataOrBlockedError
+//       (the stale-panelWidthsMM export-throw catch) shipped on main under a mislabeled "Batch 55"
+//       comment, the same label batch 55 above (unframedEdgeReasons) already legitimately owns.
+//       Its comments are relabeled Batch 56 here, retroactively — chronologically first on main,
+//       numbered second. Documentation/labeling only: unframedEdges/unframedEdgeReasons, the four
+//       Case blocks, and schemaVersion untouched. Also fills two gaps flagged after batch 55
+//       shipped (setUnframedEdge's collision guard has zero live evidence; 'silicone-flat'/
+//       'frame-off' never checked against AS1288 routing) as named sections in
+//       configurator_export_schema.md, and checks (not assumes) the x/x+w-in-[0,openingW]
+//       invariant that guard's own argument relies on — never tested before, exercised for the
+//       first time via a one-off headless-Chrome script (55 trees, 173 leaves, zero violations).
+//       Full detail in Configurator_Project_Summary.md §11 item 3p.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -6967,13 +6987,16 @@ function buildExportData() {
   };
 }
 
-// Batch 55 — computeSlidingAssemblyLeafCorrections (called from buildExportElevation, called from
+// Batch 56 — computeSlidingAssemblyLeafCorrections (called from buildExportElevation, called from
 // buildExportData) throws on a stale panelWidthsMM marker (batch 52/53) instead of returning an
 // {ok:false} result the way the cross-elevation mismatch above does. Left uncaught, that throw
 // escapes both call sites of buildExportData below as an uncaught exception straight out of the
 // Export/Done button's click handler — in embed mode this means the click silently does nothing
 // and no 'done' message is ever sent to the parent. This wrapper is the single place both call
 // sites go through instead of calling buildExportData() directly, so the catch logic exists once.
+// (Retroactively numbered — this shipped under a mislabeled "Batch 55" comment, in the same
+// session that also did the real, now-merged batch 55 (unframedEdgeReasons, schemaVersion 5).
+// See the project summary's own batch-56 changelog entry for the numbering-collision writeup.)
 //
 // Distinguishing this from computeSlidingAssemblyLeafCorrections' OTHER throw (a section path
 // that doesn't resolve to a rect — the schema doc's own "should never happen" case) is by message
@@ -7006,7 +7029,7 @@ function buildExportDataOrBlockedError() {
 // returns immediately — no file is downloaded, no partial/malformed JSON is produced. This is the
 // same check, not a standalone-specific one: the mismatch is blocked identically regardless of
 // which of the two export entry points (this one, or the embed 'done' handler) triggered it.
-// Batch 55 — goes through buildExportDataOrBlockedError() rather than buildExportData() directly,
+// Batch 56 — goes through buildExportDataOrBlockedError() rather than buildExportData() directly,
 // so the stale-panelWidthsMM throw is blocked the same way as the cross-elevation mismatch.
 function downloadExportFile() {
   clearExportBlockedError();
@@ -7120,7 +7143,7 @@ document.getElementById('exportJsonBtn').addEventListener('click', () => {
     // Batch 39 — same buildExportData() {ok, ...} check as downloadExportFile above: on a
     // cross-elevation pane mismatch, shows the in-page error and does NOT send 'done' at all —
     // the mismatch is blocked identically in embed mode, not just standalone.
-    // Batch 55 — buildExportDataOrBlockedError() also blocks a stale-panelWidthsMM throw the same
+    // Batch 56 — buildExportDataOrBlockedError() also blocks a stale-panelWidthsMM throw the same
     // way, so a click here never dies silently with no 'done' ever sent to the parent.
     clearExportBlockedError();
     const result = buildExportDataOrBlockedError();
