@@ -798,6 +798,79 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       confirms clean. Not changed: the absent-marker fallback path for either export or reopen,
 //       unframedEdges, Case 4, meeting-jamb detection, cross-elevation matching, on-screen
 //       drawing, double-hung.
+// 53:   catch a stale panelWidthsMM per SECTION, not per row.
+//       Batch 52's isPanelWidthsStale compared the row's own total drawn span against the
+//       marker's stored total. Proven (algebraically and by direct trace, batch 52's own
+//       verification) NOT to catch a bar moved at a pattern-letter boundary (e.g. OXXO's own
+//       top-level flush join): a zero-thickness plain split's two sides always sum to exactly
+//       the parent's own width regardless of where the join sits (leftW=posMM, rightW=w−posMM,
+//       leftW+rightW=w for any posMM) — the row's own total span is invariant to that specific
+//       edit even though each individual section's own width isn't.
+//       Fix: detect staleness per SECTION by comparing its current drawn width against a
+//       snapshot taken at the moment panelWidthsMM was last stamped, not by re-deriving anything
+//       analytically.
+//       (1) New marker field, sectionDrawnWidthsMM: each section's own DRAWN width, in pattern
+//       order, as actually rendered at the moment of stamping — not the entered/real width
+//       (panelWidthsMM already has that); the section's own drawn width, which differs from
+//       real by whatever tuck-in/overlap strip lands on it.
+//       (2) New stampSectionDrawnWidths(markedPath, pattern), called from both
+//       confirmAssemblyPreset and confirmAssemblyEdit immediately AFTER their own render() call
+//       — the drawn geometry only exists once the freshly-built/resized tree has actually been
+//       walked. Computes this assembly's section paths (computeSlidingWinSectionPaths(pattern)
+//       relative to the marked path), reads each section's .w from ev.lastNodeRects (now
+//       fresh), and sets sectionDrawnWidthsMM directly on the marker object already living in
+//       the committed tree — getNode(markedPath).assemblyPresetRef, mutated in place (getNode
+//       returns the live object by reference; setNode never clones, confirmed by tracing both
+//       call sites' own tree construction). No second setNode/render() — pure bookkeeping
+//       alongside the marker's existing fields. Sliding-overlap ids only; every other family has
+//       no panelWidthsMM to compare against in the first place.
+//       (3) isPanelWidthsStale(ref, sectionRects, sashless) reworked to a per-section
+//       comparison: false when ref.sectionDrawnWidthsMM isn't a valid array of pattern.length
+//       numbers — covers both the pre-existing "absent" case (an old rawState with no
+//       panelWidthsMM at all) and a marker that HAS panelWidthsMM but was stamped before this
+//       batch (batch 51/52, no sectionDrawnWidthsMM yet) — both fall through to
+//       resolveSlidingRealWidths' own existing logic unchanged (which still uses panelWidthsMM
+//       directly when it's present and valid, batch-48 reconstruction only when it's genuinely
+//       absent — no new fallback invented here). Otherwise stale if ANY sectionRects[i].w
+//       differs from ref.sectionDrawnWidthsMM[i] by more than 0.01mm. `sashless` is no longer
+//       read by this comparison (a direct per-section drawn-width diff needs no tuck-in
+//       knowledge) but kept as a parameter so neither call site (export, reopen) needed to
+//       change what it passes. computeSlidingRowDrawnTotal removed entirely — its only two call
+//       sites were both inside the old whole-row check/throw, both gone.
+//       (4) Export's throw (computeSlidingAssemblyLeafCorrections) now names exactly which
+//       section(s) changed and their before/after drawn widths, re-deriving the diff against the
+//       same snapshot for the message (isPanelWidthsStale itself only returns a bool) — more
+//       useful than a single row-level total once a per-section edit is what's actually being
+//       reported.
+//       (5) getAssemblyPresetCurrentState needed NO changes — its own batch-52 prefill logic
+//       (current drawn widths, with the row's tuck-in added to pattern.lastIndexOf('O')) only
+//       ever depended on isPanelWidthsStale's boolean result, not on how that result was
+//       computed, and the underlying math (sum-constraint satisfied algebraically regardless of
+//       which section absorbs the tuck-in; the last run's own O is always the one section whose
+//       entered value has no effect on rendered geometry) holds regardless of whether the
+//       staleness was caused by an overall resize or a redistributed run. Confirmed by trace, not
+//       assumed — and confirmed by this batch's own OXXO test: reopening a bar-moved OXXO
+//       prefills [760,640,700,460] (all four sections' own current drawn widths, with the row's
+//       full 40mm tuck-in added to section 3, the pattern's own last O) and confirming unchanged
+//       both passes and reproduces the row's exact new geometry.
+//       Not changed: the batch-52 Fix A (availableWidth reading the marked node's own live rect
+//       width) — still correct, still needed, this batch's own per-section detection only
+//       changes what feeds the throw/prefill decision, not that fix. unframedEdges, Case 4,
+//       meeting-jamb detection, cross-elevation matching, on-screen drawing, double-hung.
+//       Verified against the real page in headless Chrome across 7 sessions: every batch-51
+//       (11/11) and batch-52 (5/5, with the OXXO-bar-move assertion updated to expect a throw
+//       instead of confirming the old gap) test case replayed with the expected outcomes; the
+//       OXXO unequal-widths case with its middle flush-join bar moved now throws, naming
+//       "section 0 (O): was 610mm, now drawn at 760mm; section 3 (O): was 570mm, now drawn at
+//       420mm" — precisely the two sections either side of the moved join — and reopening
+//       prefills the new current widths, confirms clean, and re-exports with no throw; the
+//       overall-resize case from batch 52 (OX door +100mm) still throws and still self-heals
+//       exactly as before; the control case (a bar strictly inside one already-subdivided
+//       section) still does not trigger staleness; a fresh preset creation followed immediately
+//       by a fresh, unchanged "Edit assembly widths" confirm shows sectionDrawnWidthsMM stamped
+//       correctly both times with no false staleness in between; a marker with panelWidthsMM but
+//       no sectionDrawnWidthsMM (simulating a batch-51/52 rawState) is treated as not-stale and
+//       exports using the stored panelWidthsMM directly, not the batch-48 X-based reconstruction.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/
@@ -1323,9 +1396,11 @@ function findAssemblyPresetAncestor(path) {
 // whatever this returns without a dedicated branch here.
 function getAssemblyPresetCurrentState(markedPath, sectionCount, pattern, id) {
   const widths = [];
-  // Batch 52 — {x, w} per section (not just w), so isPanelWidthsStale below can compute the
-  // row's own current drawn span (computeSlidingRowDrawnTotal needs section 0's x and the last
-  // section's x+w) without a second pass over lastNodeRects.
+  // Batch 52 — {x, w} per section (not just w). Batch 53: isPanelWidthsStale now compares each
+  // section's own w against the marker's sectionDrawnWidthsMM snapshot directly; x is unused by
+  // that comparison but still needed below (the tuck-in-adjusted prefill reads section widths,
+  // not positions, so x isn't strictly required there either — kept for parity with the rect
+  // shape computeSlidingAssemblyLeafCorrections' own sectionRects already uses).
   const sectionRects = [];
   const winPaths = isSlidingOverlapId(id, pattern) ? computeSlidingWinSectionPaths(pattern) : null;
   for (let i = 0; i < sectionCount; i++) {
@@ -4336,10 +4411,16 @@ function confirmAssemblyPreset(rect, pattern, productClass, family, id) {
     tree.assemblyPresetRef = { pattern, productClass, id };
     if (isSlidingOverlapId(id, pattern)) tree.assemblyPresetRef.panelWidthsMM = sectionWidths.slice();
   }
-  setNode(ev.pendingSplit.path, tree);
+  const markedPath = ev.pendingSplit.path;
+  setNode(markedPath, tree);
   ev.pendingSplit = null;
   ev.selected = null;
   render();
+  // Batch 53 — snapshot this assembly's per-section DRAWN widths right after the render() above,
+  // so a later on-drawing edit that changes any section's own drawn width (without going through
+  // confirmAssemblyEdit) can be detected as stale (isPanelWidthsStale). Sliding-overlap ids only —
+  // every other family has no panelWidthsMM to compare against in the first place.
+  if (isSlidingOverlapId(id, pattern)) stampSectionDrawnWidths(markedPath, pattern);
 }
 
 // Batch 17: mirrors buildSlidingWinOverlapTree's exact construction order to derive each
@@ -4518,6 +4599,11 @@ function confirmAssemblyEdit(markedPath, pattern, availableWidth, sectionCount, 
   ev.pendingSplit = null;
   ev.selected = null;
   render();
+  // Batch 53 — same snapshot as confirmAssemblyPreset, taken here after THIS function's own
+  // render() (a resize can change every section's drawn width, not just the ones actually typed
+  // differently, since the row's own drawn geometry is fully rebuilt) — see
+  // stampSectionDrawnWidths' own comment.
+  if (isSlidingOverlapId(id, pattern)) stampSectionDrawnWidths(markedPath, pattern);
 }
 
 function confirmSplit(axis, rect) {
@@ -6146,62 +6232,53 @@ function resolveSlidingRealWidths(ref, drawnWidths) {
   return pattern.split('').map(c => c === 'O' ? realO : realX);
 }
 
-// Batch 52 — the row's own true current drawn span: from the first section's own drawn left
-// edge to the last section's own drawn right edge. `sectionRects` is the same ordered array of
-// per-section drawn rects computeSlidingAssemblyLeafCorrections and getAssemblyPresetCurrentState
-// both already assemble (one rect per pattern letter, whether that section is a single leaf or a
-// further-subdivided subtree — the rect covers the section as a whole either way). Used by
-// isPanelWidthsStale below to compare against what the marker's own stored panelWidthsMM claims.
-function computeSlidingRowDrawnTotal(sectionRects) {
-  const first = sectionRects[0], last = sectionRects[sectionRects.length - 1];
-  return (last.x + last.w) - first.x;
+// Batch 52 — captures each section's own DRAWN width (not the real/entered width — panelWidthsMM
+// already has that) at the moment a sliding-overlap marker's panelWidthsMM was last stamped, so a
+// later render can be compared against it to detect staleness (isPanelWidthsStale below). Called
+// from confirmAssemblyPreset/confirmAssemblyEdit AFTER their own render() — the drawn geometry
+// this reads (ev.lastNodeRects) only exists once the freshly-built/resized tree has actually been
+// walked; calling it before render() would read stale-or-absent rects left over from whatever was
+// on screen before this confirm. Mutates the marker object already living in the committed tree in
+// place (getNode returns it by reference, confirmed — setNode never clones) rather than calling
+// setNode/render() again: nothing visual changes here, this is pure bookkeeping alongside the
+// marker's other fields (pattern/productClass/id/panelWidthsMM).
+function stampSectionDrawnWidths(markedPath, pattern) {
+  const ev = activeElevation();
+  const sectionPaths = computeSlidingWinSectionPaths(pattern).map(rel => markedPath.concat(rel));
+  const drawnWidths = sectionPaths.map(p => {
+    const rect = ev.lastNodeRects[pathKey(p)];
+    return rect ? rect.w : null;
+  });
+  if (drawnWidths.some(w => w == null)) return; // defensive: shouldn't happen right after render()
+  getNode(markedPath).assemblyPresetRef.sectionDrawnWidthsMM = drawnWidths;
 }
 
-// Batch 52 — true when the marker's own stored panelWidthsMM describes a total that no longer
-// matches the row's real current drawn span, i.e. an on-drawing edit resized the row WITHOUT
-// going through confirmAssemblyEdit at all — batch 51's own item-5 finding named two such edits:
-// a change to the elevation's overall width/height, and a plain-split bar's dimension label
-// positioned BETWEEN pattern-letter sections (not a bar strictly inside one already-subdivided
-// section — the control case, which correctly leaves the row's own total span unchanged since
-// only that ONE section's own internal split moved, nothing about the section's own outer
-// boundary). False whenever panelWidthsMM isn't a valid array at all — the pre-existing "absent"
-// case (e.g. an old rawState) is resolveSlidingRealWidths' own reconstruction-fallback's job,
-// unrelated to and untouched by this check. `sashless` must be the caller's own already-determined
-// value. Same 0.01mm tolerance confirmAssemblyEdit's own total-check already uses.
-// Confirmed gap, not fixed here (found empirically while verifying this batch, not assumed): an
-// overall width/height change IS caught by this check (the row's own outer total genuinely
-// changes) — but moving OXXO's own top-level flush-join bar is NOT, even though it's the other
-// named cause of staleness. Traced, not guessed: that join is always built with thicknessMM:0
-// (buildSlidingWinOverlapTree's own inter-run joining split), and for a zero-thickness split,
-// leftW + rightW always equals the OUTER width exactly, for ANY posMM — moving the bar
-// redistributes space between the two runs but provably cannot change the row's own outer total,
-// which is the only thing computeSlidingRowDrawnTotal (and therefore this check) looks at.
-// Confirmed directly (not just algebraically): moved a real OXXO's flush bar from posMM 1190 to
-// 1340 and read the marked node's own rect straight from the live tree — its w stayed exactly
-// 2400, unchanged. So this specific edit leaves a genuinely stale panelWidthsMM (the two runs'
-// own widths have changed, even though the row's total hasn't) that export will silently use
-// uncorrected — the same silent-wrong-export failure mode this whole batch exists to close,
-// still open for this one path. Flagged rather than widening isPanelWidthsStale beyond what was
-// specified (a per-run or per-section check would catch it, but that's a materially bigger check
-// than "compare two totals" and wasn't asked for here).
-// Known gap, not fixed here: computeSlidingWinTotalWidth reads activeElevation().hasFrame
-// internally rather than taking hasFrame as a parameter. That's correct at every call site this
-// function had before this batch (confirmAssemblyPreset/confirmAssemblyEdit/reopen — all reachable
-// only for the currently on-screen elevation, where activeElevation() IS ev). It's also correct
-// for getAssemblyPresetCurrentState's own call below, for the same reason. But
-// computeSlidingAssemblyLeafCorrections (below) calls this once per elevation during export,
-// including for whichever elevation ISN'T currently active — if a two-elevation angled join's two
-// elevations disagree on hasFrame, checking the non-active one here reads the WRONG elevation's
-// hasFrame. Pre-existing characteristic of computeSlidingWinTotalWidth, not introduced by this
-// batch, but newly reachable from export through this call; not exercised by any single-elevation
-// verification here — flagged rather than silently worked around.
+// Batch 53 — per-SECTION staleness, replacing batch 52's whole-row-total comparison. Proven (not
+// just suspected) that the row-total check could never catch every on-drawing edit batch 51's
+// item 5 named: OXXO's own top-level flush-join bar is always built with thicknessMM:0, and for a
+// zero-thickness split, its two sides' widths always sum to exactly the outer container width for
+// ANY posMM — moving it redistributes space between the two runs but provably cannot change the
+// row's own outer total, which was the only thing the old check looked at. Verified directly
+// (batch 52): moved a real OXXO's flush bar, the marked node's own rect stayed unchanged, no
+// staleness detected. This version instead compares each section's CURRENT drawn width against a
+// SNAPSHOT taken at the moment panelWidthsMM was last stamped (`sectionDrawnWidthsMM`,
+// stampSectionDrawnWidths above) — a moved flush-join bar changes the drawn width of whichever
+// sections sit either side of it (their own allocated space shrinks/grows), which this now catches
+// directly, without needing to analytically re-derive anything about which edits can or can't
+// move a total. False whenever sectionDrawnWidthsMM isn't a valid array of pattern.length numbers
+// — covers both the pre-existing "absent" case (an old rawState with no panelWidthsMM at all) AND
+// a marker that has panelWidthsMM but was stamped before this batch (batch 51/52, no
+// sectionDrawnWidthsMM yet) — both fall through to resolveSlidingRealWidths' own reconstruction
+// fallback exactly as before, no invented snapshot. `sashless` is no longer used by this
+// comparison (the old total-based formula needed it for computeSlidingWinTotalWidth's own tuck-in
+// term; a direct per-section drawn-width comparison needs no tuck-in knowledge at all) — kept as a
+// parameter anyway so both call sites (export, reopen) need no change in what they pass. Same
+// 0.01mm tolerance as before.
 function isPanelWidthsStale(ref, sectionRects, sashless) {
-  if (!Array.isArray(ref.panelWidthsMM) || ref.panelWidthsMM.length !== ref.pattern.length || !ref.panelWidthsMM.every(v => typeof v === 'number')) {
+  if (!Array.isArray(ref.sectionDrawnWidthsMM) || ref.sectionDrawnWidthsMM.length !== ref.pattern.length || !ref.sectionDrawnWidthsMM.every(v => typeof v === 'number')) {
     return false;
   }
-  const storedTotal = computeSlidingWinTotalWidth(ref.pattern, ref.panelWidthsMM, sashless);
-  const drawnTotal = computeSlidingRowDrawnTotal(sectionRects);
-  return Math.abs(storedTotal - drawnTotal) > 0.01;
+  return sectionRects.some((r, i) => Math.abs(r.w - ref.sectionDrawnWidthsMM[i]) > 0.01);
 }
 
 function computeSlidingAssemblyLeafCorrections(leaves, ev, nodeRects) {
@@ -6230,14 +6307,19 @@ function computeSlidingAssemblyLeafCorrections(leaves, ev, nodeRects) {
     // fallback exists for panelWidthsMM being genuinely ABSENT (an old rawState), a different
     // situation from a PRESENT-but-now-wrong value; guessing at the latter risks masking the real
     // problem instead of surfacing it.
+    // Batch 53 — names exactly which section(s) changed (isPanelWidthsStale itself only returns a
+    // bool, so the mismatch is re-derived here against the same snapshot for the error message),
+    // rather than a whole-row total that a per-section edit (a moved flush-join bar) might not even
+    // move.
     if (isPanelWidthsStale(ref, sectionRects, sashless)) {
-      const storedTotal = computeSlidingWinTotalWidth(pattern, ref.panelWidthsMM, sashless);
-      const drawnTotal = computeSlidingRowDrawnTotal(sectionRects);
+      const changed = sectionRects
+        .map((r, i) => ({ i, letter: pattern[i], was: ref.sectionDrawnWidthsMM[i], now: r.w }))
+        .filter(c => Math.abs(c.now - c.was) > 0.01);
+      const changedDesc = changed.map(c => 'section ' + c.i + ' (' + c.letter + '): was ' + c.was + 'mm, now drawn at ' + c.now + 'mm').join('; ');
       throw new Error('computeSlidingAssemblyLeafCorrections: a sliding assembly (pattern "' + pattern +
-        '", marked path [' + markedPath.join(',') + ']) has a stale panelWidthsMM — its stored widths ' +
-        'total ' + storedTotal + 'mm, but the row is currently drawn at ' + drawnTotal + 'mm. An on-drawing ' +
-        'edit (most likely a changed overall width/height) has resized this row without going through ' +
-        '"Confirm resize". Reopen "Edit assembly widths" and confirm to fix it.');
+        '", marked path [' + markedPath.join(',') + ']) has a stale panelWidthsMM — ' + changedDesc + '. An ' +
+        'on-drawing edit (a moved flush-join bar, or a changed overall width/height) has resized this row ' +
+        'without going through "Confirm resize". Reopen "Edit assembly widths" and confirm to fix it.');
     }
     const tuckIn = ev.hasFrame ? (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM) : 0;
     const realW = resolveSlidingRealWidths(ref, sectionRects.map(r => r.w));
