@@ -6928,6 +6928,36 @@ function buildExportData() {
   };
 }
 
+// Batch 55 — computeSlidingAssemblyLeafCorrections (called from buildExportElevation, called from
+// buildExportData) throws on a stale panelWidthsMM marker (batch 52/53) instead of returning an
+// {ok:false} result the way the cross-elevation mismatch above does. Left uncaught, that throw
+// escapes both call sites of buildExportData below as an uncaught exception straight out of the
+// Export/Done button's click handler — in embed mode this means the click silently does nothing
+// and no 'done' message is ever sent to the parent. This wrapper is the single place both call
+// sites go through instead of calling buildExportData() directly, so the catch logic exists once.
+//
+// Distinguishing this from computeSlidingAssemblyLeafCorrections' OTHER throw (a section path
+// that doesn't resolve to a rect — the schema doc's own "should never happen" case) is by message
+// text only: neither throw uses a distinct Error subtype/name, so this checks for the
+// stale-panelWidthsMM message's own unique substring ('has a stale panelWidthsMM'), which the
+// missing-rect message never contains. classifySlidingWinJoin's throws (reachable from here via
+// computeSlidingWinSectionPaths, called for every assembly pattern) and buildSlidingWinOverlapTree's
+// throw use their own distinct message text too, so they're also unaffected. Any throw that isn't
+// the stale-panelWidthsMM case is deliberately rethrown — left as an uncaught exception, exactly
+// as before this batch; inventing a generic catch-all message for those is a separate decision.
+const STALE_SLIDING_ASSEMBLY_MARKER = 'has a stale panelWidthsMM';
+
+function buildExportDataOrBlockedError() {
+  try {
+    return buildExportData();
+  } catch (e) {
+    if (e instanceof Error && typeof e.message === 'string' && e.message.includes(STALE_SLIDING_ASSEMBLY_MARKER)) {
+      return { ok: false, error: 'Export blocked — reopen and confirm the sliding assembly: ' + e.message };
+    }
+    throw e;
+  }
+}
+
 // Filename: elevation count + today's date (yyyy-mm-dd), e.g. "configurator-export-2elev-2026-09-21.json".
 // Not pinned down by either the batch prompt or the schema doc — flagged as an assumption, not
 // silently invented, per the batch prompt's own instruction.
@@ -6937,9 +6967,11 @@ function buildExportData() {
 // returns immediately — no file is downloaded, no partial/malformed JSON is produced. This is the
 // same check, not a standalone-specific one: the mismatch is blocked identically regardless of
 // which of the two export entry points (this one, or the embed 'done' handler) triggered it.
+// Batch 55 — goes through buildExportDataOrBlockedError() rather than buildExportData() directly,
+// so the stale-panelWidthsMM throw is blocked the same way as the cross-elevation mismatch.
 function downloadExportFile() {
   clearExportBlockedError();
-  const result = buildExportData();
+  const result = buildExportDataOrBlockedError();
   if (!result.ok) {
     showExportBlockedError(result.error);
     return;
@@ -7049,8 +7081,10 @@ document.getElementById('exportJsonBtn').addEventListener('click', () => {
     // Batch 39 — same buildExportData() {ok, ...} check as downloadExportFile above: on a
     // cross-elevation pane mismatch, shows the in-page error and does NOT send 'done' at all —
     // the mismatch is blocked identically in embed mode, not just standalone.
+    // Batch 55 — buildExportDataOrBlockedError() also blocks a stale-panelWidthsMM throw the same
+    // way, so a click here never dies silently with no 'done' ever sent to the parent.
     clearExportBlockedError();
-    const result = buildExportData();
+    const result = buildExportDataOrBlockedError();
     if (!result.ok) {
       showExportBlockedError(result.error);
       return;
