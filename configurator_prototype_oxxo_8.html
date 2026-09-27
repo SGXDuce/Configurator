@@ -6781,6 +6781,64 @@ function computeCrossElevationLinks() {
   return { ok: true, linksByElevation };
 }
 
+// Plain (non-preset) sliding leaf tuck-in — a single sliding-window/door pane typed directly via
+// the per-pane type dropdown (no OX/OXX/OXXO preset, no assemblyPresetRef anywhere above it) was
+// never covered by computeSlidingAssemblyLeafCorrections/computeSlidingAssemblyVerticalCorrections
+// above — both are gated on collectSlidingAssemblyRanges, which only finds nodes carrying an
+// assemblyPresetRef marker. A lone sliding leaf built this way has no such marker and no entered
+// section widths to fall back on, so it exported flush/uncorrected on every axis. This is a
+// separate, dedicated correction for exactly that case — a single unsplit sliding leaf, not an
+// assembly — and deliberately does NOT reuse collectSlidingAssemblyRanges/
+// computeSlidingAssemblyLeafCorrections/resolveSlidingRealWidths/isPanelWidthsStale: that machinery
+// assumes entered per-section widths and overlap joins between sections, neither of which apply to
+// a lone leaf with nothing dividing it.
+//
+// Scope: a leaf whose node.type is 'horizontal-slider' or 'vertical-slider', with NO
+// assemblyPresetRef anywhere in its ancestor path (checked by testing against the very same ranges
+// collectSlidingAssemblyRanges/collectDoubleHungAssemblyRanges already collect, rather than a new
+// tree walk), AND unsplit — its own rect touches the frame's inner opening on all four sides (left,
+// right, top, bottom), using the same EDGE_TOUCH_EPS_MM tolerance and touch-detection pattern
+// computeSlidingAssemblyLeafCorrections/computeSlidingAssemblyVerticalCorrections already use. A
+// leaf touching fewer than all four sides is a manually-split tree (e.g. two sliding leaves built
+// side by side without the preset UI) — out of scope here; only edges against the outer opening are
+// ever tested, never an interior edge between two such leaves.
+//
+// Width: same tuckIn choice as computeSlidingAssemblyLeafCorrections (FRAME_TUCKIN_MM, halved to
+// SASHLESS_FRAME_TUCKIN_MM when sashless, zero with no outer frame), applied symmetrically since an
+// unsplit leaf touches both jambs at once. Height: same SLIDING_HEIGHT_TUCKIN_MM as
+// computeSlidingAssemblyVerticalCorrections, but unconditionally exempting sashless (person-
+// confirmed there — a sashless row's vertical tuck-in is 0, not a smaller nonzero figure) rather
+// than gating on hasFrame alone. Only a sliding leaf itself is ever in scope here — a lone `fixed`
+// pane isn't a sliding pane at all, so it's untouched, same as before this fix.
+function computeLoneSlidingLeafCorrections(leaves, ev, openingW, openingH) {
+  const assemblyRanges = [];
+  collectSlidingAssemblyRanges(ev.root, [], assemblyRanges);
+  collectDoubleHungAssemblyRanges(ev.root, [], assemblyRanges);
+  const corrections = new Map();
+  leaves.forEach(l => {
+    const node = l.node;
+    if (node.type !== 'horizontal-slider' && node.type !== 'vertical-slider') return;
+    if (assemblyRanges.some(r => pathStartsWith(l.path, r.path))) return; // covered by the preset pipeline
+
+    const touchesLeft = Math.abs(l.x - 0) < EDGE_TOUCH_EPS_MM;
+    const touchesRight = Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM;
+    const touchesTop = Math.abs(l.y - 0) < EDGE_TOUCH_EPS_MM;
+    const touchesBottom = Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM;
+    if (!(touchesLeft && touchesRight && touchesTop && touchesBottom)) return; // a split leaf — out of scope
+
+    const sashless = node.sashless === true;
+    const tuckInW = ev.hasFrame ? (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM) : 0;
+    const tuckInH = (ev.hasFrame && !sashless) ? SLIDING_HEIGHT_TUCKIN_MM : 0;
+    corrections.set(l, {
+      x: l.x - tuckInW / 2,
+      w: l.w + tuckInW,
+      y: l.y - tuckInH / 2,
+      h: l.h + tuckInH
+    });
+  });
+  return corrections;
+}
+
 function buildExportElevation(ev, index, linkedPaneIds) {
   const { overallW, overallH } = resolveOverallDims(ev, index);
   const m = getMembers(ev);
@@ -6818,20 +6876,27 @@ function buildExportElevation(ev, index, linkedPaneIds) {
   // map, per-unit rather than per-row — see computeDoubleHungWidthCorrections' own comment.
   const doubleHungCorrections = computeDoubleHungWidthCorrections(leaves, ev, nodeRects);
 
+  // Additive, separate from every correction map above — a lone sliding leaf built directly via
+  // the per-pane type dropdown (no preset, no assemblyPresetRef) that was previously exported flush
+  // on both axes. See computeLoneSlidingLeafCorrections' own comment for why this is deliberately
+  // NOT folded into the preset pipeline above it.
+  const loneSlidingCorrections = computeLoneSlidingLeafCorrections(leaves, ev, openingW, openingH);
+
   let frameLengthMM = 0;
   const panes = leaves.map(l => {
     const node = l.node;
     const isFixed = node.type === 'fixed';
     const sashEdges = isFixed ? { top: 0, bottom: 0, left: 0, right: 0 } : getSashEdges(node);
-    // Batch 48 — realGeom is {x: l.x, w: l.w} for every leaf NOT part of a sliding assembly or
-    // (batch 59) a double-hung assembly (identity, no change), or the corrected real panel {x, w}
-    // for one that is. slidingCorrections and doubleHungCorrections never both have an entry for
-    // the same leaf — sliding-window/door and double-hung are mutually exclusive families (a leaf
-    // belongs to at most one assembly-preset marker), so this fallback chain is safe. Only this
-    // variable feeds widthMM/xMM/areaM2/visibleGlazedAreaM2 below — every other calculation in
-    // this function keeps using `l` (the original drawn leaf) directly, untouched.
-    const realGeom = slidingCorrections.get(l) || doubleHungCorrections.get(l) || { x: l.x, w: l.w };
-    const realGeomV = verticalCorrections.get(l) || { y: l.y, h: l.h };
+    // Batch 48 — realGeom is {x: l.x, w: l.w} for every leaf NOT part of a sliding assembly, a
+    // (batch 59) double-hung assembly, or a lone sliding leaf (identity, no change), or the
+    // corrected real panel {x, w} for one that is. slidingCorrections, doubleHungCorrections, and
+    // loneSlidingCorrections never more than one have an entry for the same leaf — a leaf belongs
+    // to at most one assembly-preset marker, and loneSlidingCorrections explicitly excludes any
+    // leaf under such a marker — so this fallback chain is safe. Only this variable feeds
+    // widthMM/xMM/areaM2/visibleGlazedAreaM2 below — every other calculation in this function keeps
+    // using `l` (the original drawn leaf) directly, untouched.
+    const realGeom = slidingCorrections.get(l) || doubleHungCorrections.get(l) || loneSlidingCorrections.get(l) || { x: l.x, w: l.w };
+    const realGeomV = verticalCorrections.get(l) || loneSlidingCorrections.get(l) || { y: l.y, h: l.h };
     const areaM2 = (realGeom.w * realGeomV.h) / 1e6;
     const visibleGlazedAreaM2 = glazedAreaM2({ w: realGeom.w, h: realGeomV.h, node: l.node });
 
