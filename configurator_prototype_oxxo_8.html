@@ -1496,6 +1496,11 @@ function cloneForSplit(node) {
       bladeLengthMM: node.bladeLengthMM
     };
     if (node.sashless) next.sashless = true;
+    // Batch 63 — sashlessOrientationVersion carried over the same conditional way as sashless
+    // itself: a split leaf's children must keep knowing whether they carry the new (batch 63+)
+    // sashEdgesMM orientation/values or the old (pre-batch-63) ones, so restoreFromRawState's
+    // migration doesn't re-migrate (or wrongly skip) an already-correct leaf after a split.
+    if (node.sashlessOrientationVersion != null) next.sashlessOrientationVersion = node.sashlessOrientationVersion;
     return next;
   }
   return emptyNode();
@@ -5585,26 +5590,27 @@ const FRAME_TUCKIN_MM = 40;
 // throughout; only the per-edge sash values (and, for sliding-window, the tuck-in figure used to
 // size the row) differ. Windows only — sliding doors, casement, and awning never offer this.
 //
-// Batch 61 — the old shared sashless-stile constant split into two constants, SASHLESS_HSLIDER_CAPPING_MM (horizontal-
-// slider, i.e. sliding-window X) and SASHLESS_DH_CAPPING_MM (double-hung top/bottom sash). Same
-// numeric value (10) as the old single constant — this batch changes no numeric behaviour anywhere
-// — split purely so each call site can carry its own orientation-correctness comment without the
-// two unrelated leaf shapes sharing one name. SASHLESS_HSLIDER_CAPPING_MM's own usage (~line 5900
-// below) is flagged WRONG-ORIENTATION until a future "numbers batch" (see its own comment there and
-// Task 1's new sashless Case 5 in buildExportElevation) — kept in place, unrenamed-again, only
-// because fixing it is explicitly out of scope here. SASHLESS_DH_CAPPING_MM's own usage
-// (buildDoubleHungUnit, ~line 6030 below) is already correct — no such caveat needed there.
-const SASHLESS_HSLIDER_CAPPING_MM = 10;
-const SASHLESS_DH_CAPPING_MM = 10;
-// SASHLESS_FRAME_TUCKIN_MM — sliding-window family only. Same "flat per row, not per panel" shape
-// as FRAME_TUCKIN_MM above (2 frame-touching edges × a fixed mm-per-edge figure), but built from
-// 3mm hidden per edge instead of 20mm — i.e. 2 × 3mm = 6mm/row, leaving 7mm of the 10mm stile
-// visible at each jamb. The 3mm/edge figure is a stated value for this batch, not independently
-// derived or confirmed against a real drawing — same honesty standard the original 40mm
-// (20mm/edge) tuck-in got when it was first built. Deliberately a SEPARATE constant from
-// FRAME_TUCKIN_MM, not a branch inside it — a non-sashless preset built in the same session must
-// keep using the real 40mm tuck-in completely unchanged.
-const SASHLESS_FRAME_TUCKIN_MM = 6;
+// Batch 63 — CONFIRMED, PERMANENT product figures (person-confirmed), replacing batch 61's
+// placeholder value and wrong-until-the-numbers-batch orientation. SASHLESS_HSLIDER_CAPPING_MM is
+// now 15mm (was 10, a placeholder) and is applied to sashTopMM/sashBottomMM (TOP and BOTTOM
+// capping), not left/right — the X leaf's real free edges are LEFT and RIGHT (0mm, no material),
+// matching the physically-correct orientation the checkbox label (batch 61) already described. See
+// its own use in buildAssemblyPresetTree below for the actual assignment. SASHLESS_DH_CAPPING_MM
+// stays on left/right (orientation already correct since batch 61) — only its VALUE changes 10→15.
+const SASHLESS_HSLIDER_CAPPING_MM = 15;
+const SASHLESS_DH_CAPPING_MM = 15;
+// SASHLESS_FRAME_TUCKIN_MM — sliding-window family only, jamb (sideways) tuck-in for a sashless
+// row. Batch 63 — person-confirmed permanent figure: sideways tuck-in for a sashless row is 0mm
+// (flush with the frame, no hidden material at the jamb) — was 6mm (a placeholder, 3mm/edge,
+// batch 42/61). Kept as a real, separately-named constant (not deleted) rather than inlining 0 at
+// every call site: every one of its use sites (computeSlidingWinPrefillWidths,
+// computeSlidingWinTotalWidth, computeSlidingAssemblyLeafCorrections, computeLoneSlidingLeafCorrections,
+// and the assembly-widths-prefill block near line 1651) also handles the NON-sashless case in the
+// same expression (`sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM`), so removing the
+// constant would mean rewriting each of those conditionals rather than deleting a single
+// definition — keeping it as a 0-valued constant is the smaller, safer change and preserves the
+// existing "which tuck-in figure applies" branch structure exactly.
+const SASHLESS_FRAME_TUCKIN_MM = 0;
 
 // SLIDING_HEIGHT_TUCKIN_MM — person-confirmed (Duce): a framed, non-sashless sliding-window/door
 // row's panel also tucks in vertically, 20mm at the head + 20mm at the sill = 40mm total. This
@@ -5857,40 +5863,31 @@ function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
 // and that's already captured export-side by Case 4 (unframedEdges), not by the sashless flag.
 // O keeps its all-zero sash (batch 45, unchanged) but no longer carries the flag at all; only X
 // leaves do.
-// Batch 61 — CORRECTS a wrong blanket claim this comment block used to make here ("sashless: true
-// means this pane's horizontal [top/bottom] edges are unsupported, route to AS1288 Clause 5.15").
-// That was only ever true for vertical-slider (double-hung); for THIS function's own X
-// (horizontal-slider) leaves it has always been backwards — an X's real sashEdgesMM (below) has
-// ZERO material top/bottom and REAL material left/right, so its genuinely free/unsupported edges
-// are top/bottom, the opposite of what SASHLESS_HSLIDER_CAPPING_MM's own left/right placement
-// suggests. `sashless: true` now means, precisely: "this pane's glass is held on two opposite
-// edges only; the free edges are given by unframedEdges" (see buildExportElevation's new Case 5 and
-// configurator_export_schema.md's corrected `sashless` field note) — not a blanket "top/bottom are
-// always the free edges" claim. Fixing SASHLESS_HSLIDER_CAPPING_MM's own left/right placement to
-// match the true top/bottom orientation is explicitly deferred to a future "numbers batch" — see
-// that constant's own definition comment and the loud warning at its use below.
+// Batch 61 corrected a wrong blanket claim this comment block used to make here ("sashless: true
+// means this pane's horizontal [top/bottom] edges are unsupported, route to AS1288 Clause 5.15") —
+// that was only ever true for vertical-slider (double-hung); for THIS function's own X
+// (horizontal-slider) leaves the real free edges are LEFT and RIGHT, not top/bottom.
+// Batch 63 — CONFIRMED, PERMANENT orientation (person-confirmed figures): the X leaf now puts
+// SASHLESS_HSLIDER_CAPPING_MM (15mm) on sashTopMM/sashBottomMM (real capping material) and 0 on
+// sashLeftMM/sashRightMM (free, no material) — the physically correct orientation, matching the
+// checkbox label (batch 61) and Case 5's unframedEdges left/right flag intent. This is a full
+// swap from batch 61's placeholder left/right placement, not a value-only change.
 function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id, sashless) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   const leaves = pattern.split('').map((ch, i) => {
     const type = ch === 'O' ? 'fixed' : 'horizontal-slider';
-    // Batch 61 — SASHLESS_HSLIDER_CAPPING_MM kept on LEFT/RIGHT here, UNCHANGED numeric value and
-    // UNCHANGED edge placement (still 10mm, still left/right) — this batch makes no numeric
-    // changes anywhere. LOUD FLAG: this placement is PHYSICALLY WRONG. Per the checkbox label
-    // change in renderAssemblyPresetForm (Task 5) and the Known-gap note in
-    // configurator_export_schema.md, a sashless horizontal slider's glass is actually held by
-    // capping on TOP and BOTTOM only, with LEFT and RIGHT free — the opposite of what this line
-    // does. A future "numbers batch" must swap this to sashTopMM/sashBottomMM and rename this
-    // constant again once it reflects correct usage (e.g. to something like
-    // SASHLESS_HSLIDER_FREE_EDGE_MM or similar, once it's a free-edge/reveal figure rather than a
-    // capping-width figure — exact naming left to that batch). Until then: DO NOT CONSUME v6
-    // SASHLESS HORIZONTAL PANES FOR REAL NUMBERS.
+    // Batch 63 — SASHLESS_HSLIDER_CAPPING_MM (15mm) now on TOP/BOTTOM, 0 on LEFT/RIGHT — the
+    // confirmed, correct orientation (see the function-level comment above and the constant's own
+    // definition comment). sashlessOrientationVersion: 2 stamps every leaf built from this batch
+    // forward so restoreFromRawState can migrate any older (batch 61-or-earlier) saved leaf that
+    // still carries the old 10mm left/right values.
     const leaf = sashless
       ? {
           kind: 'filled', type, productClass,
-          sashTopMM: 0, sashBottomMM: 0,
-          sashLeftMM: type === 'fixed' ? 0 : SASHLESS_HSLIDER_CAPPING_MM,
-          sashRightMM: type === 'fixed' ? 0 : SASHLESS_HSLIDER_CAPPING_MM,
-          ...(type === 'fixed' ? {} : { sashless: true })
+          sashLeftMM: 0, sashRightMM: 0,
+          sashTopMM: type === 'fixed' ? 0 : SASHLESS_HSLIDER_CAPPING_MM,
+          sashBottomMM: type === 'fixed' ? 0 : SASHLESS_HSLIDER_CAPPING_MM,
+          ...(type === 'fixed' ? {} : { sashless: true, sashlessOrientationVersion: 2 })
         }
       : {
           kind: 'filled', type, productClass,
@@ -6022,15 +6019,19 @@ function getDoubleHungOverlapMM(sashless) {
 // top/bottom (both zeroed here), matching buildExportElevation's new Case 5 exactly
 // ('sashless-free-edge' on top+bottom for a vertical-slider) — no "wrong until numbers batch"
 // caveat needed for this call site.
+// Batch 63 — SASHLESS_DH_CAPPING_MM value changed 10→15 (orientation unchanged, still left/right).
+// sashlessOrientationVersion: 2 stamped here too, same migration marker as the horizontal-slider
+// leaf, so restoreFromRawState can tell a fresh (batch 63+) sashless leaf from an older one that
+// still carries the old 10mm value.
 function buildDoubleHungUnit(productClass, topHeightMM, sashless) {
   const topLeaf = sashless
     ? { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
-        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_DH_CAPPING_MM, sashRightMM: SASHLESS_DH_CAPPING_MM, sashless: true }
+        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_DH_CAPPING_MM, sashRightMM: SASHLESS_DH_CAPPING_MM, sashless: true, sashlessOrientationVersion: 2 }
     : { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
         sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM };
   const bottomLeaf = sashless
     ? { kind: 'filled', type: 'vertical-slider', slideDirection: 'up', productClass,
-        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_DH_CAPPING_MM, sashRightMM: SASHLESS_DH_CAPPING_MM, sashless: true }
+        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_DH_CAPPING_MM, sashRightMM: SASHLESS_DH_CAPPING_MM, sashless: true, sashlessOrientationVersion: 2 }
     : { kind: 'filled', type: 'vertical-slider', slideDirection: 'up', productClass,
         sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM };
   return {
@@ -7407,9 +7408,40 @@ function stripSashlessFromFixedLeaves(node) {
   stripSashlessFromFixedLeaves(node.children[0]);
   stripSashlessFromFixedLeaves(node.children[1]);
 }
+// Batch 63 — data migration on load, not a schema/version-gated change (no RAW_STATE_SCHEMA_VERSION
+// bump — rawState's own shape is unchanged, only stale numeric values on old sashless leaves are
+// rewritten). Any sashless leaf WITHOUT sashlessOrientationVersion:2 was built before batch 63 and
+// still carries the OLD sashEdgesMM values baked in (horizontal-slider: 0 top/bottom, 10 left/
+// right; vertical-slider: 10 left/right, 0 top/bottom — value only, orientation already correct for
+// vertical-slider). Rewrite to the new confirmed values for its real type, then stamp the marker so
+// a subsequent load never re-migrates it. Same recursive kind/children walk as
+// stripSashlessFromFixedLeaves just above.
+function migrateSashlessOrientation(node) {
+  if (node.kind === 'filled') {
+    if (node.sashless === true && node.sashlessOrientationVersion !== 2) {
+      if (node.type === 'horizontal-slider') {
+        node.sashTopMM = SASHLESS_HSLIDER_CAPPING_MM;
+        node.sashBottomMM = SASHLESS_HSLIDER_CAPPING_MM;
+        node.sashLeftMM = 0;
+        node.sashRightMM = 0;
+      } else if (node.type === 'vertical-slider') {
+        node.sashLeftMM = SASHLESS_DH_CAPPING_MM;
+        node.sashRightMM = SASHLESS_DH_CAPPING_MM;
+        node.sashTopMM = 0;
+        node.sashBottomMM = 0;
+      }
+      node.sashlessOrientationVersion = 2;
+    }
+    return;
+  }
+  if (node.kind === 'empty') return;
+  migrateSashlessOrientation(node.children[0]);
+  migrateSashlessOrientation(node.children[1]);
+}
 function restoreFromRawState(state) {
   elevations = state.elevations;
   elevations.forEach(ev => stripSashlessFromFixedLeaves(ev.root));
+  elevations.forEach(ev => migrateSashlessOrientation(ev.root));
   activeElevationIndex = state.activeElevationIndex;
   angledJoinAngleDeg = state.angledJoinAngleDeg;
   angledJoinType = state.angledJoinType;
@@ -7462,12 +7494,18 @@ function restoreFromRawState(state) {
 // instruction, this check runs FIRST, before touching buildExportElevation/serializeRawState at
 // all, so a mismatch produces genuinely no export (not a partial or malformed one) — both call
 // sites (downloadExportFile below and the embed 'done' handler) must check `ok` themselves.
-// Batch 62 — TEMPORARY pre-export gate, pending a real AS1288 decision on (a) a sashless pane
-// whose own rectangle has been subdivided by a bar/transom/inset sash, and (b) a sashless pane on
-// a frame-off elevation. Neither case is a schema change — no field added, no schemaVersion bump,
-// no rawState shape change. This is a gate in front of export, not a change to export's own output
+// Batch 62 introduced this as a TEMPORARY pre-export gate, pending a decision on (a) a sashless
+// pane whose own rectangle has been subdivided by a bar/transom, and (b) a sashless pane on a
+// frame-off elevation. Batch 63 CONFIRMS both as PERMANENT product rules, not pending decisions: a
+// sashless slider (either family) cannot be built on a frame-off elevation, and cannot be
+// subdivided by a bar/transom/mullion — person-confirmed alongside this batch's real sashEdgesMM
+// capping figures. Neither case is a schema change — no field added, no schemaVersion bump, no
+// rawState shape change. This is a gate in front of export, not a change to export's own output
 // shape; every existing export-building function (buildExportElevation, computeCrossElevationLinks,
-// the tuck-in correction maps, etc.) is untouched.
+// the tuck-in correction maps, etc.) is untouched. Per batch 63's own scope, this remains the ONLY
+// enforcement point — no defensive/structural UI code was added elsewhere to prevent building a
+// subdivided or frame-off sashless slider; the UI still allows building these shapes, only export
+// is gated.
 //
 // Deliberately reuses the SAME {ok, error} return-path pattern computeCrossElevationLinks already
 // uses (see buildExportData below), NOT the batch-56 buildExportDataOrBlockedError anti-pattern
@@ -7592,9 +7630,9 @@ function checkSashlessExportable() {
     if (seen.has(key)) return;
     seen.add(key);
     if (p.kind === 'subdivided') {
-      lines.push('Export blocked: ' + p.elevationName + ' has a sashless slider divided by a bar or inset sash. How AS 1288 should treat that edge is not decided yet. Remove the division or build without sashless.');
+      lines.push('Export blocked: ' + p.elevationName + ' has a sashless slider divided by a bar. A sashless slider cannot be subdivided — remove the division or build without sashless.');
     } else {
-      lines.push('Export blocked: ' + p.elevationName + ' has a sashless pane but its frame is off. How AS 1288 should treat this is not decided yet. Turn the frame back on or build without sashless.');
+      lines.push('Export blocked: ' + p.elevationName + ' has a sashless pane but its frame is off. A sashless slider cannot be built without a frame — turn the frame back on or build without sashless.');
     }
   });
   return { ok: false, error: lines.join(' ') };
