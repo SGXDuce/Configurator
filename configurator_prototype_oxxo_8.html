@@ -7462,7 +7462,164 @@ function restoreFromRawState(state) {
 // instruction, this check runs FIRST, before touching buildExportElevation/serializeRawState at
 // all, so a mismatch produces genuinely no export (not a partial or malformed one) — both call
 // sites (downloadExportFile below and the embed 'done' handler) must check `ok` themselves.
+// Batch 62 — TEMPORARY pre-export gate, pending a real AS1288 decision on (a) a sashless pane
+// whose own rectangle has been subdivided by a bar/transom/inset sash, and (b) a sashless pane on
+// a frame-off elevation. Neither case is a schema change — no field added, no schemaVersion bump,
+// no rawState shape change. This is a gate in front of export, not a change to export's own output
+// shape; every existing export-building function (buildExportElevation, computeCrossElevationLinks,
+// the tuck-in correction maps, etc.) is untouched.
+//
+// Deliberately reuses the SAME {ok, error} return-path pattern computeCrossElevationLinks already
+// uses (see buildExportData below), NOT the batch-56 buildExportDataOrBlockedError anti-pattern
+// (a message-substring catch around an uncaught throw) — this is a real, structural pre-check with
+// its own dedicated boolean result, not a throw somewhere deep in the call graph being caught after
+// the fact.
+//
+// Runs over EVERY elevation in `elevations`, not just the active one — getNode()/activeElevation()
+// only ever read the currently-active elevation via module-level state, so a second, explicit
+// per-elevation walk (via nodeAt(root, path) below, taking an explicit root rather than reading
+// activeElevation()) is required to check an elevation the person isn't currently looking at.
+//
+// nodeAt — same child-index-array path walk as getNode() above, but taking an explicit root
+// instead of reading activeElevation().root via closure, so it works on ANY elevation's tree, not
+// only the active one.
+function nodeAt(root, path) {
+  let node = root;
+  for (const i of path) node = node.children[i];
+  return node;
+}
+
+// Case (b), FRAME-OFF: an elevation with hasFrame===false containing any leaf with
+// node.sashless===true. Simple whole-tree walk — no preset-marker awareness needed, since the
+// question is just "does a sashless leaf exist anywhere on this frame-off elevation," and
+// findAnySashlessLeaf (batch 54) already does exactly that walk generically.
+//
+// Case (a), SUBDIVIDED: detected structurally, using each matched preset's OWN expected leaf
+// positions — NOT a generic "split node with sashless panes on both sides" heuristic, which would
+// wrongly fire on an OXX preset's own internal overlap join or an OXXO preset's own internal flush
+// join (both normal, valid, and already exercised by every prior sashless batch back to batch 45).
+// For each sliding assembly (collectSlidingAssemblyRanges) and each of its sections' expected
+// paths (computeSlidingWinSectionPaths(ref.pattern), one per pattern letter, each prefixed by the
+// marker's own path), and for each double-hung assembly (collectDoubleHungAssemblyRanges) and each
+// unit's two expected child leaf positions (collectDoubleHungUnitPaths finds the path TO the
+// sashSplit node itself — a double-hung "unit" IS that sashSplit node, whose own two children
+// [0]/[1] are the top/bottom sash leaves, confirmed directly against buildDoubleHungUnit's real
+// shape rather than assumed) — resolve the real current node at that expected leaf position via
+// nodeAt(). A leaf position is a SUBDIVIDED-sashless problem iff ALL of:
+//   - the resolved node is NOT kind:'filled' and NOT kind:'empty' (something split it further)
+//   - the resolved node has NO assemblyPresetRef of its own (a brand-new preset built inside this
+//     section stamps its own marker — deliberately excluded, that's a legitimate nested preset,
+//     not a division of the sashless pane itself)
+//   - findAnySashlessLeaf(node) is true (a sashless leaf survives somewhere under the division —
+//     cloneForSplit, batch 54, carries `sashless` onto a split leaf's children, so this correctly
+//     finds it even several splits deep)
+// This is deliberately narrow: it only ever looks INSIDE a preset's own expected section/unit
+// positions. A transom/mullion between two whole assemblies, between an assembly and an ordinary
+// pane, or between two ordinary panes, sits in the tree ABOVE the marker (or beside it) — never AT
+// one of these expected leaf positions — so none of those shapes are ever visited by this walk at
+// all, let alone flagged.
+//
+// Orphan sashless leaves — a sashless leaf that isn't at any preset marker's own expected leaf
+// position at all (which should not happen, since sashless is only ever stamped by
+// buildAssemblyPresetTree/buildDoubleHungUnit, both marker-building paths) — are COUNTED, not
+// blocked on, via a whole-tree findAnySashlessLeaf count minus the count found at expected
+// positions; reported for investigation, not treated as an export-blocking condition.
+function checkSashlessExportable() {
+  const problems = []; // { elevationName, kind: 'subdivided'|'frame-off' }
+  let totalSashlessLeaves = 0;
+  let sashlessLeavesAtExpectedPositions = 0;
+
+  elevations.forEach(ev => {
+    const root = ev.root;
+
+    // Whole-elevation sashless leaf count, for the orphan check below.
+    totalSashlessLeaves += countSashlessLeaves(root);
+
+    // Case (b) — frame-off.
+    if (ev.hasFrame === false && findAnySashlessLeaf(root)) {
+      problems.push({ elevationName: ev.name, kind: 'frame-off' });
+    }
+
+    // Case (a) — subdivided sashless section/unit, sliding assemblies.
+    const slidingRanges = [];
+    collectSlidingAssemblyRanges(root, [], slidingRanges);
+    slidingRanges.forEach(({ path: markerPath, ref }) => {
+      const sectionPaths = computeSlidingWinSectionPaths(ref.pattern);
+      sectionPaths.forEach(sectionPath => {
+        const fullPath = markerPath.concat(sectionPath);
+        const node = nodeAt(root, fullPath);
+        sashlessLeavesAtExpectedPositions += countSashlessLeaves(node);
+        if (isSubdividedSashlessProblem(node)) {
+          problems.push({ elevationName: ev.name, kind: 'subdivided' });
+        }
+      });
+    });
+
+    // Case (a) — subdivided sashless unit, double-hung assemblies.
+    const dhRanges = [];
+    collectDoubleHungAssemblyRanges(root, [], dhRanges);
+    dhRanges.forEach(({ path: markerPath, node: markerNode }) => {
+      const unitPaths = [];
+      collectDoubleHungUnitPaths(markerNode, [], unitPaths);
+      unitPaths.forEach(unitPath => {
+        [0, 1].forEach(childIdx => {
+          const fullPath = markerPath.concat(unitPath).concat([childIdx]);
+          const node = nodeAt(root, fullPath);
+          sashlessLeavesAtExpectedPositions += countSashlessLeaves(node);
+          if (isSubdividedSashlessProblem(node)) {
+            problems.push({ elevationName: ev.name, kind: 'subdivided' });
+          }
+        });
+      });
+    });
+  });
+
+  // Orphan count — reported via console only (see the batch 62 project-summary/schema entries);
+  // not part of the {ok, error} result, since orphans are counted, never blocked on.
+  const orphanSashlessLeafCount = totalSashlessLeaves - sashlessLeavesAtExpectedPositions;
+  if (orphanSashlessLeafCount !== 0) {
+    console.warn('checkSashlessExportable: ' + orphanSashlessLeafCount + ' orphan sashless leaf(es) found outside every preset marker\'s expected positions.');
+  }
+
+  if (problems.length === 0) return { ok: true };
+
+  // ONE message covering every problem across every elevation, not one popup per problem — same
+  // "collect everything, report once" shape as the batch-40 cross-elevation mismatch message.
+  const seen = new Set();
+  const lines = [];
+  problems.forEach(p => {
+    const key = p.elevationName + '|' + p.kind;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (p.kind === 'subdivided') {
+      lines.push('Export blocked: ' + p.elevationName + ' has a sashless slider divided by a bar or inset sash. How AS 1288 should treat that edge is not decided yet. Remove the division or build without sashless.');
+    } else {
+      lines.push('Export blocked: ' + p.elevationName + ' has a sashless pane but its frame is off. How AS 1288 should treat this is not decided yet. Turn the frame back on or build without sashless.');
+    }
+  });
+  return { ok: false, error: lines.join(' ') };
+}
+
+// A resolved leaf-position node is a "subdivided sashless" problem iff it's been split further
+// (not filled/empty), carries no assemblyPresetRef of its own (excludes a deliberately nested new
+// preset), and a sashless leaf survives somewhere underneath it.
+function isSubdividedSashlessProblem(node) {
+  if (node.kind === 'filled' || node.kind === 'empty') return false;
+  if (node.assemblyPresetRef) return false;
+  return findAnySashlessLeaf(node);
+}
+
+// Generic recursive count of sashless leaves under a node — same traversal shape as
+// findAnySashlessLeaf, but counting rather than short-circuiting, for the orphan-leaf report.
+function countSashlessLeaves(node) {
+  if (node.kind === 'filled') return node.sashless === true ? 1 : 0;
+  if (node.kind === 'empty') return 0;
+  return countSashlessLeaves(node.children[0]) + countSashlessLeaves(node.children[1]);
+}
+
 function buildExportData() {
+  const sashlessCheck = checkSashlessExportable();
+  if (!sashlessCheck.ok) return { ok: false, error: sashlessCheck.error };
   const links = computeCrossElevationLinks();
   if (!links.ok) return { ok: false, error: links.error };
   const exportElevations = elevations.map((ev, i) => buildExportElevation(ev, i, links.linksByElevation[i]));
