@@ -991,23 +991,37 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       itself: a lone sliding-window/door leaf built directly via the per-pane type dropdown (no
 //       OX/OXX/OXXO/D/DD/DDD preset, no assemblyPresetRef) was exporting flush/uncorrected on every
 //       axis; new function requiring a leaf to touch all 4 opening edges before applying tuckIn/2
-//       jamb correction (width) and SLIDING_HEIGHT_TUCKIN_MM correction (height, horizontal-slider
-//       only). 24f1e45 then rewrote that whole-leaf "touches all 4 opening edges" gate into a
-//       per-edge test — a manually mullion-split pair of sliding leaves (not a preset) was getting
-//       ZERO correction on any edge, jamb included, once it touched fewer than 4 opening edges.
-//       Now each edge independently gets tuckIn/2 if it touches the outer frame OR a real
-//       sibling mullion (new findAdjacentSplit helper: nearest ancestor split of the matching axis,
-//       thicknessMM > 0, not silicone) — mullion tuck-in is left/right only, both slider types; a
-//       flush split or interior edge gets nothing. Top/bottom unchanged (frame-only, horizontal-
-//       slider-only). Preset OXXO's flush middle join and DD/DDD's internal-mullion tuck-in (batch
-//       59) both confirmed to need no change — untouched, separate assemblyPresetRef-gated
-//       pipeline. Vertical sliders' own up/down tuck-in remains separate and still open. Self-found
-//       bug, fixed before shipping: findAdjacentSplit's first version had its side/child-index
-//       pairing inverted, silently zeroing every mullion detection — caught by a CDP-driven browser
-//       test, not a hand trace, fixed, full suite re-run clean. Verified via CDP-driven browser
-//       tests: single-leaf regression, real 40mm manual mullion split (horizontal + vertical
-//       sliders), flush manual split, OX/DD preset exports unaffected — all 5 passed. No
-//       schemaVersion bump. Full detail in Configurator_Project_Summary.md §11 item 3u.
+//       jamb correction (width) and SLIDING_HEIGHT_TUCKIN_MM correction (height). 24f1e45 then
+//       rewrote that whole-leaf "touches all 4 opening edges" gate into a per-edge test — a
+//       manually mullion-split pair of sliding leaves (not a preset) was getting ZERO correction on
+//       any edge, jamb included, once it touched fewer than 4 opening edges. Now each edge is
+//       tested independently: an edge touching the outer frame OR a real sibling mullion (new
+//       findAdjacentSplit helper: nearest ancestor split of the matching axis, thicknessMM > 0, not
+//       silicone) gets tuckIn/2; a flush/zero-thickness split, a silicone joint, or an edge interior
+//       to a further subdivision gets nothing. Sashless: width uses SASHLESS_FRAME_TUCKIN_MM in
+//       place of FRAME_TUCKIN_MM; height tuck-in is forced to 0. Mullion tuck-in (left/right) is
+//       tested identically for horizontal-slider and vertical-slider leaves. Top/bottom
+//       (SLIDING_HEIGHT_TUCKIN_MM/2) is likewise NOT gated on node.type — a vertical-slider leaf
+//       whose top or bottom edge touches the outer frame gets the same top/bottom tuck-in as a
+//       horizontal-slider, in both dad98aa and 24f1e45 (this was never horizontal-slider-only, an
+//       earlier draft of this entry said so incorrectly). The AS 1288 side has confirmed a lone
+//       vertical slider does tuck into its head and sill — but the 20mm-per-end figure applied
+//       there is SLIDING_HEIGHT_TUCKIN_MM, the horizontal slider's own confirmed figure, reused
+//       for vertical sliders WITHOUT separate confirmation. Do not change SLIDING_HEIGHT_TUCKIN_MM
+//       until that amount is confirmed for vertical sliders specifically — flagged as an open item
+//       (Configurator_Project_Summary.md §5), not fixed by this batch. A leaf gets NO entry in the
+//       correction map at all when none of its 4 edges qualify for any correction — e.g.
+//       hasFrame:false, or a leaf every one of whose edges is either flush or interior to a further
+//       subdivision with no frame touch — not only in the "manually split" case. Preset OXXO's
+//       flush middle join and DD/DDD's internal-mullion tuck-in (batch 59) both confirmed to need no
+//       change — untouched, separate assemblyPresetRef-gated pipeline. Self-found bug, fixed before
+//       shipping: findAdjacentSplit's first version had its side/child-index pairing inverted,
+//       silently zeroing every mullion detection — caught by a CDP-driven browser test, not a hand
+//       trace, fixed, full suite re-run clean. Verified via CDP-driven browser tests: single-leaf
+//       regression, real 40mm manual mullion split (horizontal + vertical sliders), flush manual
+//       split, OX/DD preset exports unaffected — all 5 passed. No schemaVersion bump. Full detail
+//       in Configurator_Project_Summary.md §11 item 3u and configurator_export_schema.md's "Lone
+//       and manually split slider tuck-in (batch 60)" section.
 // ===== END BATCH LOG =====
 
 // Batch 9: sash frame width is now stored per-edge — sashTopMM/sashBottomMM/sashLeftMM/

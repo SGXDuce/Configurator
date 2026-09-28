@@ -1,6 +1,6 @@
 # Configurator JSON Export Schema — v5 (v1 superseded batch 39, v2 superseded batch 43, v3 superseded batch 44, v4 superseded batch 55)
 
-Status: built (v1 in batch 29, v2/v3 in batches 39/43, v4 in batch 44, v5 in batch 55, corrected batches 45/46/48/49/51/52/53) — this document now describes the actual, current export shape, not a design-only proposal. Batch 56 added no schema change — documentation only, two new "Known gap" sections on `unframedEdgeReasons`' own collision guard and on `'silicone-flat'`/`'frame-off'`'s unchecked AS1288 routing (see below).
+Status: built (v1 in batch 29, v2/v3 in batches 39/43, v4 in batch 44, v5 in batch 55, corrected batches 45/46/48/49/51/52/53) — this document now describes the actual, current export shape, not a design-only proposal. Batch 56 added no schema change — documentation only, two new "Known gap" sections on `unframedEdgeReasons`' own collision guard and on `'silicone-flat'`/`'frame-off'`'s unchecked AS1288 routing (see below). Batch 60 (spanning commits `dad98aa`/`24f1e45`) also added no schema change — corrects `widthMM`/`xMM`/`heightMM`/`yMM` values within the existing v5 shape for lone and manually split (non-preset) slider leaves; see the new "Lone and manually split slider tuck-in" section below.
 
 Originally written to resolve the open question in the project summary's §6.7 item 1 — the export shape had not been designed before v1.
 
@@ -342,6 +342,41 @@ Returns a read-only `Map` (leaf → `{x, w}`), wired into `buildExportElevation`
 **Unaffected, confirmed by diff.** `getDoubleHungOverlapMM`/`DOUBLE_HUNG_OVERLAP_MM` (a different axis, already correct), `heightMM`/`yMM` for a double-hung pane (already correct — this batch is width/jamb only), `unframedEdgeCount`, `unframedEdges`, `unframedEdgeReasons`, meeting-jamb touch detection, and `computeCrossElevationLinks` all keep reading the original drawn geometry or their own existing logic directly.
 
 No `schemaVersion` bump — this fills a previously-undocumented gap in the existing v5 shape (`widthMM`/`xMM` were always silently wrong for a framed double-hung unit, never flagged as an open item the way the sliding-panel-height gap was), not a new field — same precedent batch 48 set.
+
+## Lone and manually split slider tuck-in (batch 60)
+
+**Scope.** `computeLoneSlidingLeafCorrections(leaves, ev, openingW, openingH)` corrects any `horizontal-slider` or `vertical-slider` leaf that is NOT under an `assemblyPresetRef` marker (checked against the exact same ranges `collectSlidingAssemblyRanges`/`collectDoubleHungAssemblyRanges` collect for the separate preset pipeline — a leaf under a preset is skipped entirely and always corrected by that other pipeline instead, never by this one). This covers two kinds of leaf: a single slider typed directly via the per-pane dropdown, filling the whole opening; and either side of a slider pair built with the mullion/split tool by hand (not any OX/OXX/OXXO or D/DD/DDD preset).
+
+**Spans two commits, written up as one batch.** `dad98aa` ("Add tuck-in correction for a lone (non-preset) sliding leaf on export") added this function, gated on a leaf touching all four opening edges — a manually split leaf, touching fewer than four, got no correction at all. `24f1e45` ("Rewrite lone-sliding-leaf tuck-in to test each edge independently") replaced that whole-leaf gate with the per-edge rule below. Neither commit had a batch number at the time; both are batch 60.
+
+**Per-edge rule.** Each of a leaf's 4 edges is tested independently, not as a single all-or-nothing leaf test:
+
+- An edge touching the **outer frame** (jamb, head, or sill) gets `tuckIn/2`.
+- An edge touching a **real sibling mullion** — the nearest ancestor split of the matching axis (found by a new `findAdjacentSplit(root, path, axis, side)` helper, which walks DOWN from the tree root along the leaf's own path so the deepest/nearest qualifying split wins, never an outer split several levels further up) with `thicknessMM > 0` and not `isSiliconeJoint` — also gets `tuckIn/2`, the identical magnitude as an outer-frame edge.
+- A **flush (zero-thickness) split**, a **silicone joint**, or an edge that's **interior to a further subdivision** (no ancestor split of the matching axis touches that side at all) gets no correction.
+
+Left/right tuck-in uses `FRAME_TUCKIN_MM`, halved to `SASHLESS_FRAME_TUCKIN_MM` when the leaf's own `sashless === true`, zero when `ev.hasFrame` is false. Mullion tuck-in (left/right) is tested and applied identically for `horizontal-slider` and `vertical-slider` leaves — a mullion is a vertical divider regardless of which way the leaf itself slides.
+
+**Top/bottom is not slider-type-gated — read this before assuming otherwise.** Top/bottom tuck-in (`SLIDING_HEIGHT_TUCKIN_MM`, halved per edge) is applied whenever the leaf's top or bottom edge touches the outer frame, forced to 0 when sashless, and zero when `ev.hasFrame` is false — with **no check on `node.type` at all**. A `vertical-slider` leaf gets exactly the same top/bottom tuck-in a `horizontal-slider` leaf gets. This has been true since `dad98aa` and is unchanged by `24f1e45`. **The AS 1288 side has confirmed that a lone vertical slider genuinely does tuck into its head and sill** — the mechanism is real — **but the specific 20mm-per-end amount applied here is `SLIDING_HEIGHT_TUCKIN_MM`, the horizontal slider's own confirmed figure, reused for vertical sliders without a separate confirmation that 20mm/end is the correct amount for a vertical slider's own head/sill track.** Do not change `SLIDING_HEIGHT_TUCKIN_MM`'s value until that's confirmed — see `Configurator_Project_Summary.md` §5's new open item.
+
+**No entry at all, not a zero-valued one.** If none of a leaf's 4 edges qualify for any correction, the function returns without adding that leaf to its correction map (no `corrections.set(l, ...)` call) — there is no map entry, not an entry holding all-zero deltas. This happens for more than just the manually-split case: it also happens whenever `ev.hasFrame` is false (every tuck-in constant resolves to 0 regardless of touch), and for a leaf every one of whose edges is either a flush split or interior to a further subdivision with no frame touch at all.
+
+**Confirmed unaffected, on purpose.** Preset `OXXO`'s own middle X-X join is photo-confirmed genuinely flush (no mullion) — its existing zero-correction there is untouched. Preset `DD`/`DDD` already gets full 40mm tuck-in at its own internal mullion joins (batch 59) — also untouched. Both are reached through the completely separate, `assemblyPresetRef`-gated pipeline this function skips via its own `assemblyRanges.some(...)` guard.
+
+**Worked example**, real output from the current code — 1800×2100mm overall, 60mm frame members (opening 1680×1980), two `horizontal-slider` leaves with 40mm sash edges, split by a manual 50mm-thick vertical mullion at the opening's centre (not a preset):
+
+```json
+[
+  { "type": "horizontal-slider", "xMM": 40,  "yMM": 40, "widthMM": 855, "heightMM": 2020 },
+  { "type": "horizontal-slider", "xMM": 905, "yMM": 40, "widthMM": 855, "heightMM": 2020 }
+]
+```
+
+Each raw drawn leaf is 815mm wide ((1680 − 50) / 2). Each leaf's outer-jamb edge and its mullion-facing edge both qualify (real 50mm mullion, not flush) and each gets `FRAME_TUCKIN_MM/2 = 20mm`, so each leaf's width grows by 40mm to 855mm; the left leaf's `x` shifts left by 20mm (drawn 0 → −20, plus `jambL` 60mm → `xMM` 40), the right leaf's `x` shifts left by 20mm too (drawn 865 → 845, plus `jambL` 60mm → `xMM` 905). Both leaves get `yMM:40`/`heightMM:2020` — the full outer-frame top/bottom tuck-in, since both edges touch the opening's own head/sill (unaffected by the vertical split).
+
+A second real trace, two `vertical-slider` leaves split by a manual 50mm-thick **horizontal** bar (same 1800×2100/60mm-frame elevation): top leaf `{xMM:40, yMM:40, widthMM:1720, heightMM:985}`, bottom leaf `{xMM:40, yMM:1075, widthMM:1720, heightMM:985}` — both leaves' left/right edges get the full outer-jamb tuck-in (no vertical split there), and both leaves' mullion-facing top/bottom edge (real 50mm bar) gets the same `SLIDING_HEIGHT_TUCKIN_MM/2 = 20mm` an outer head/sill edge would get, confirming top/bottom tuck-in is not gated on slider type and applies at an internal mullion exactly as it applies at the outer frame.
+
+A third real trace, `fixed` + `vertical-slider` split by the same manual mullion tool (real 50mm-thick vertical bar): the `fixed` leaf exports flush at its own drawn geometry on every edge (`{xMM:60, yMM:60, widthMM:815, heightMM:1980}` — no correction at all, `fixed` is out of scope for this function entirely, `node.type` check at the top excludes it), while the neighbouring `vertical-slider` leaf gets full jamb-and-mullion tuck-in exactly as in the two-slider case.
 
 ## Stale `panelWidthsMM` detection and self-healing reopen (batch 52, per-section detection batch 53)
 
