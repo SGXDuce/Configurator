@@ -6781,35 +6781,54 @@ function computeCrossElevationLinks() {
   return { ok: true, linksByElevation };
 }
 
-// Plain (non-preset) sliding leaf tuck-in — a single sliding-window/door pane typed directly via
-// the per-pane type dropdown (no OX/OXX/OXXO preset, no assemblyPresetRef anywhere above it) was
-// never covered by computeSlidingAssemblyLeafCorrections/computeSlidingAssemblyVerticalCorrections
-// above — both are gated on collectSlidingAssemblyRanges, which only finds nodes carrying an
-// assemblyPresetRef marker. A lone sliding leaf built this way has no such marker and no entered
-// section widths to fall back on, so it exported flush/uncorrected on every axis. This is a
-// separate, dedicated correction for exactly that case — a single unsplit sliding leaf, not an
-// assembly — and deliberately does NOT reuse collectSlidingAssemblyRanges/
-// computeSlidingAssemblyLeafCorrections/resolveSlidingRealWidths/isPanelWidthsStale: that machinery
-// assumes entered per-section widths and overlap joins between sections, neither of which apply to
-// a lone leaf with nothing dividing it.
+// Plain (non-preset) sliding leaf tuck-in — a sliding-window/door pane typed directly via the
+// per-pane type dropdown (no OX/OXX/OXXO or D/DD/DDD preset, no assemblyPresetRef anywhere above
+// it) was never covered by computeSlidingAssemblyLeafCorrections/
+// computeSlidingAssemblyVerticalCorrections/computeDoubleHungWidthCorrections above — all three are
+// gated on collectSlidingAssemblyRanges/collectDoubleHungAssemblyRanges, which only find nodes
+// carrying an assemblyPresetRef marker. A leaf built this way has no such marker and no entered
+// section widths to fall back on. This is a separate, dedicated correction for exactly that case —
+// deliberately does NOT reuse computeSlidingAssemblyLeafCorrections/resolveSlidingRealWidths/
+// isPanelWidthsStale: that machinery assumes entered per-section widths and overlap joins between
+// sections, neither of which apply here.
 //
-// Scope: a leaf whose node.type is 'horizontal-slider' or 'vertical-slider', with NO
-// assemblyPresetRef anywhere in its ancestor path (checked by testing against the very same ranges
-// collectSlidingAssemblyRanges/collectDoubleHungAssemblyRanges already collect, rather than a new
-// tree walk), AND unsplit — its own rect touches the frame's inner opening on all four sides (left,
-// right, top, bottom), using the same EDGE_TOUCH_EPS_MM tolerance and touch-detection pattern
-// computeSlidingAssemblyLeafCorrections/computeSlidingAssemblyVerticalCorrections already use. A
-// leaf touching fewer than all four sides is a manually-split tree (e.g. two sliding leaves built
-// side by side without the preset UI) — out of scope here; only edges against the outer opening are
-// ever tested, never an interior edge between two such leaves.
+// Rewritten (from the original all-or-nothing "touches all 4 opening edges" gate) to test each of
+// a leaf's 4 edges INDEPENDENTLY, since a manually mullion-split pair of sliding leaves (not built
+// via any preset) is physically no different from a preset row at its own internal joins, and was
+// being missed entirely by the old whole-leaf gate. Per edge:
+//   - touches the outer opening (frame) -> tuckIn/2, same as before.
+//   - touches a REAL sibling mullion (nearest ancestor split of the matching axis, thicknessMM > 0,
+//     not a silicone joint) on this leaf's side of it -> ALSO tuckIn/2, same magnitude as a jamb —
+//     confirmed physically real (a manually-split pair's real mullion is an actual timber member,
+//     same as a jamb) and consistent with what DD/DDD presets already get at their own internal
+//     mullions (batch 59). Mullion tuck-in is LEFT/RIGHT only (mullions are vertical dividers) —
+//     for both horizontal- and vertical-slider leaves.
+//   - touches a flush (thicknessMM === 0 / silicone) split, or the edge is interior to a further
+//     subdivision -> no correction on that edge (matches OXXO's own confirmed-flush middle join —
+//     untouched by this rewrite).
+// Top/bottom tuck-in (SLIDING_HEIGHT_TUCKIN_MM) stays outer-frame-only, horizontal-slider-only,
+// exactly as before — vertical sliders' own up/down slide tuck-in is a separate, still-open item,
+// deliberately left alone here.
 //
-// Width: same tuckIn choice as computeSlidingAssemblyLeafCorrections (FRAME_TUCKIN_MM, halved to
-// SASHLESS_FRAME_TUCKIN_MM when sashless, zero with no outer frame), applied symmetrically since an
-// unsplit leaf touches both jambs at once. Height: same SLIDING_HEIGHT_TUCKIN_MM as
-// computeSlidingAssemblyVerticalCorrections, but unconditionally exempting sashless (person-
-// confirmed there — a sashless row's vertical tuck-in is 0, not a smaller nonzero figure) rather
-// than gating on hasFrame alone. Only a sliding leaf itself is ever in scope here — a lone `fixed`
-// pane isn't a sliding pane at all, so it's untouched, same as before this fix.
+// findAdjacentSplit walks DOWN from the marked root along a leaf's own path (not up from the leaf)
+// so the DEEPEST qualifying ancestor split wins — the nearest physical join to the leaf itself,
+// exactly as required (an outer split several levels above a further subdivision must never win
+// over the leaf's own immediate neighbour).
+function findAdjacentSplit(root, path, axis, side) {
+  // side: 'start' (leaf is on the low/left/top side of the split, so the split is on the leaf's
+  // high/right/bottom edge) or 'end' (leaf is on the high side, split is on the leaf's low edge).
+  let node = root;
+  let found = null;
+  for (const i of path) {
+    if (node.kind === 'split' && node.axis === axis) {
+      if ((side === 'start' && i === 1) || (side === 'end' && i === 0)) found = node;
+    }
+    node = node.children ? node.children[i] : null;
+    if (!node) break;
+  }
+  return found;
+}
+
 function computeLoneSlidingLeafCorrections(leaves, ev, openingW, openingH) {
   const assemblyRanges = [];
   collectSlidingAssemblyRanges(ev.root, [], assemblyRanges);
@@ -6820,20 +6839,37 @@ function computeLoneSlidingLeafCorrections(leaves, ev, openingW, openingH) {
     if (node.type !== 'horizontal-slider' && node.type !== 'vertical-slider') return;
     if (assemblyRanges.some(r => pathStartsWith(l.path, r.path))) return; // covered by the preset pipeline
 
-    const touchesLeft = Math.abs(l.x - 0) < EDGE_TOUCH_EPS_MM;
-    const touchesRight = Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM;
-    const touchesTop = Math.abs(l.y - 0) < EDGE_TOUCH_EPS_MM;
-    const touchesBottom = Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM;
-    if (!(touchesLeft && touchesRight && touchesTop && touchesBottom)) return; // a split leaf — out of scope
-
     const sashless = node.sashless === true;
     const tuckInW = ev.hasFrame ? (sashless ? SASHLESS_FRAME_TUCKIN_MM : FRAME_TUCKIN_MM) : 0;
     const tuckInH = (ev.hasFrame && !sashless) ? SLIDING_HEIGHT_TUCKIN_MM : 0;
+
+    const touchesFrameLeft = Math.abs(l.x - 0) < EDGE_TOUCH_EPS_MM;
+    const touchesFrameRight = Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM;
+    const touchesFrameTop = Math.abs(l.y - 0) < EDGE_TOUCH_EPS_MM;
+    const touchesFrameBottom = Math.abs(l.y + l.h - openingH) < EDGE_TOUCH_EPS_MM;
+
+    const isRealMullion = (n) => !!n && n.thicknessMM > 0 && !n.isSiliconeJoint;
+    // 'end' side: leaf is the low/left/top child (index 0) of the adjacent split, so the split
+    // sits on the leaf's high/right/bottom edge. 'start' side: leaf is the high child (index 1),
+    // split sits on the leaf's low/left/top edge.
+    const leftMullion = touchesFrameLeft ? null : findAdjacentSplit(ev.root, l.path, 'v', 'start');
+    const rightMullion = touchesFrameRight ? null : findAdjacentSplit(ev.root, l.path, 'v', 'end');
+
+    let tuckLeft = 0, tuckRight = 0, tuckTop = 0, tuckBottom = 0;
+    if (touchesFrameLeft) tuckLeft = tuckInW / 2;
+    else if (isRealMullion(leftMullion)) tuckLeft = tuckInW / 2;
+    if (touchesFrameRight) tuckRight = tuckInW / 2;
+    else if (isRealMullion(rightMullion)) tuckRight = tuckInW / 2;
+    if (touchesFrameTop) tuckTop = tuckInH / 2;
+    if (touchesFrameBottom) tuckBottom = tuckInH / 2;
+
+    if (tuckLeft === 0 && tuckRight === 0 && tuckTop === 0 && tuckBottom === 0) return;
+
     corrections.set(l, {
-      x: l.x - tuckInW / 2,
-      w: l.w + tuckInW,
-      y: l.y - tuckInH / 2,
-      h: l.h + tuckInH
+      x: l.x - tuckLeft,
+      w: l.w + tuckLeft + tuckRight,
+      y: l.y - tuckTop,
+      h: l.h + tuckTop + tuckBottom
     });
   });
   return corrections;
