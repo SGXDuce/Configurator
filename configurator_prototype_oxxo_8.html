@@ -995,23 +995,29 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       rewrote that whole-leaf "touches all 4 opening edges" gate into a per-edge test — a
 //       manually mullion-split pair of sliding leaves (not a preset) was getting ZERO correction on
 //       any edge, jamb included, once it touched fewer than 4 opening edges. Now each edge is
-//       tested independently: an edge touching the outer frame OR a real sibling mullion (new
-//       findAdjacentSplit helper: nearest ancestor split of the matching axis, thicknessMM > 0, not
-//       silicone) gets tuckIn/2; a flush/zero-thickness split, a silicone joint, or an edge interior
-//       to a further subdivision gets nothing. Sashless: width uses SASHLESS_FRAME_TUCKIN_MM in
-//       place of FRAME_TUCKIN_MM; height tuck-in is forced to 0. Mullion tuck-in (left/right) is
-//       tested identically for horizontal-slider and vertical-slider leaves. Top/bottom
-//       (SLIDING_HEIGHT_TUCKIN_MM/2) is likewise NOT gated on node.type — a vertical-slider leaf
-//       whose top or bottom edge touches the outer frame gets the same top/bottom tuck-in as a
-//       horizontal-slider, in both dad98aa and 24f1e45 (this was never horizontal-slider-only, an
-//       earlier draft of this entry said so incorrectly). The AS 1288 side has confirmed a lone
-//       vertical slider does tuck into its head and sill — but the 20mm-per-end figure applied
-//       there is SLIDING_HEIGHT_TUCKIN_MM, the horizontal slider's own confirmed figure, reused
-//       for vertical sliders WITHOUT separate confirmation. Do not change SLIDING_HEIGHT_TUCKIN_MM
-//       until that amount is confirmed for vertical sliders specifically — flagged as an open item
-//       (Configurator_Project_Summary.md §5), not fixed by this batch. A leaf gets NO entry in the
-//       correction map at all when none of its 4 edges qualify for any correction — e.g.
-//       hasFrame:false, or a leaf every one of whose edges is either flush or interior to a further
+//       tested independently, but the rule is ASYMMETRIC BETWEEN AXES: LEFT/RIGHT edges get
+//       tuckIn/2 for EITHER the outer frame OR a real sibling mullion (new findAdjacentSplit
+//       helper, called only with axis 'v': nearest ancestor split of the matching axis,
+//       thicknessMM > 0, not silicone); TOP/BOTTOM edges get tuckIn/2 for the outer frame ONLY —
+//       findAdjacentSplit is never called with axis 'h', so a real horizontal mullion gets NO
+//       top/bottom tuck-in at all, for either slider type (tuckTop/tuckBottom are set solely from
+//       touchesFrameTop/touchesFrameBottom). A flush/zero-thickness split, a silicone joint, or an
+//       edge interior to a further subdivision gets nothing, on either axis. Sashless: width uses
+//       SASHLESS_FRAME_TUCKIN_MM in place of FRAME_TUCKIN_MM; height tuck-in is forced to 0.
+//       Mullion tuck-in (left/right) is tested identically for horizontal-slider and
+//       vertical-slider leaves. Top/bottom (SLIDING_HEIGHT_TUCKIN_MM/2) is likewise NOT gated on
+//       node.type — a vertical-slider leaf whose top or bottom edge touches the outer frame gets
+//       the same top/bottom tuck-in as a horizontal-slider, in both dad98aa and 24f1e45 (this was
+//       never horizontal-slider-only, an earlier draft of this entry said so incorrectly). The
+//       AS 1288 side has confirmed a lone vertical slider does tuck into its head and sill — but
+//       the 20mm-per-end figure applied there is SLIDING_HEIGHT_TUCKIN_MM, the horizontal slider's
+//       own confirmed figure, reused for vertical sliders WITHOUT separate confirmation. Do not
+//       change SLIDING_HEIGHT_TUCKIN_MM until that amount is confirmed for vertical sliders
+//       specifically, and do not add a horizontal-mullion top/bottom tuck-in rule without asking —
+//       both flagged as open items (Configurator_Project_Summary.md §5), not fixed by this batch.
+//       A leaf gets NO entry in the correction map at all when none of its 4 edges qualify for any
+//       correction — e.g. hasFrame:false, or a leaf every one of whose edges is either flush or
+//       interior to a further
 //       subdivision with no frame touch — not only in the "manually split" case. Preset OXXO's
 //       flush middle join and DD/DDD's internal-mullion tuck-in (batch 59) both confirmed to need no
 //       change — untouched, separate assemblyPresetRef-gated pipeline. Self-found bug, fixed before
