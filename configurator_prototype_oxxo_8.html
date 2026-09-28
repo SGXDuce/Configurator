@@ -402,7 +402,9 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       tolerance-value fix only. Re-traced batch 40's three test cases against the new tolerance:
 //       same pass/block outcomes (1mm doesn't change round-number cases like 1000/1400mm, only how
 //       close "close enough" is).
-// 42:   sashless variant for sliding-window and double-hung presets. New SASHLESS_STILE_MM (10)
+// 42:   sashless variant for sliding-window and double-hung presets. New sashless-stile constant
+//       (10mm, since batch 61 split into SASHLESS_HSLIDER_CAPPING_MM/SASHLESS_DH_CAPPING_MM — same
+//       value, see that batch's own comment at the constants' definition)
 //       and SASHLESS_FRAME_TUCKIN_MM (6, sliding-window only — 3mm/edge, a stated not derived
 //       figure, separate constant from FRAME_TUCKIN_MM so a non-sashless preset in the same
 //       session is unaffected) plus a new per-leaf `sashless: true` marker. New "Build sashless
@@ -419,7 +421,8 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 //       either (mirrors the already-open, unconfirmed gap around ordinary double-hung's own
 //       horizontal jamb tuck-in — not solved here for the sashless case or the pre-existing
 //       non-sashless case). Confirmed, not assumed: a sashless preset's "Edit assembly widths"
-//       reopen preserves sashless/zeroed-sash/SASHLESS_STILE_MM automatically, since
+//       reopen preserves sashless/zeroed-sash/SASHLESS_HSLIDER_CAPPING_MM (the sashless-stile
+//       constant, renamed batch 61 — see its own definition comment) automatically, since
 //       buildSlidingWinOverlapTree only ever re-wraps the EXISTING live leaf object references on
 //       resize (never clones/re-stamps them) — the one real fix needed was making the reopen
 //       form's own tuck-in-dependent total-width validation read sashless-ness off those existing
@@ -459,9 +462,10 @@ const DIM_LABEL_MIN_GAP = 40; // px — collision threshold between adjacent spl
 // 45:   sashless fix: bare O panels, plus internal unframed-edge detection (Case 4). Two parts.
 //       (1) buildAssemblyPresetTree: a sashless O (type:'fixed') leaf now gets sashLeftMM =
 //       sashRightMM = 0, matching an ordinary bare fixed pane exactly — batch 42 originally
-//       stamped SASHLESS_STILE_MM on every sashless leaf's left/right regardless of type, wrong
-//       for O specifically (no real stile there). X (horizontal-slider) leaves are unaffected,
-//       still SASHLESS_STILE_MM. Double-hung confirmed unaffected by inspection —
+//       stamped the sashless-stile constant (renamed batch 61 to SASHLESS_HSLIDER_CAPPING_MM) on
+//       every sashless leaf's left/right regardless of type, wrong for O specifically (no real
+//       stile there). X (horizontal-slider) leaves are unaffected, still that same constant (now
+//       SASHLESS_HSLIDER_CAPPING_MM). Double-hung confirmed unaffected by inspection —
 //       buildDoubleHungUnit never builds a type:'fixed' leaf at all.
 //       (2) buildExportElevation gains Case 4, unframedEdges-only (never added to
 //       unframedEdgeCount — a second, independently-documented divergence, distinct from batch
@@ -4087,7 +4091,16 @@ function renderAssemblyPresetForm(bar, rect) {
       render();
     };
     sashlessLabel.appendChild(sashlessCheckbox);
-    sashlessLabel.appendChild(document.createTextNode('Build sashless (no top/bottom sash, narrow stile)?'));
+    // Batch 61 — label text corrected to describe the PHYSICALLY correct/intended final
+    // orientation (capping top/bottom, free left/right) rather than the old, backwards-sounding
+    // "narrow stile" wording. This describes the INTENT, not the current implementation —
+    // SASHLESS_HSLIDER_CAPPING_MM (buildAssemblyPresetTree) still actually puts the capping on
+    // left/right, the wrong edges, until a future "numbers batch" fixes it (see that constant's own
+    // loud comment). This label/implementation mismatch is deliberate and expected, not a bug to
+    // reconcile here — see configurator_export_schema.md's Known-gap note. sashEdgesMM is
+    // deliberately NOT changed to match this label in this batch (out of scope — no numeric
+    // changes).
+    sashlessLabel.appendChild(document.createTextNode('Build sashless (glass held by capping on top and bottom only; left and right free)?'));
     sashlessRow.appendChild(sashlessLabel);
     bar.appendChild(sashlessRow);
   }
@@ -5572,10 +5585,17 @@ const FRAME_TUCKIN_MM = 40;
 // throughout; only the per-edge sash values (and, for sliding-window, the tuck-in figure used to
 // size the row) differ. Windows only — sliding doors, casement, and awning never offer this.
 //
-// SASHLESS_STILE_MM — the hardcoded left/right stile width a sashless preset stamps, replacing
-// whatever DEFAULT_SASH_MM (or PRESET_SASH_EDGES) that family's normal preset would otherwise
-// stamp. A fixed new default, not derived from anything existing in this file.
-const SASHLESS_STILE_MM = 10;
+// Batch 61 — the old shared sashless-stile constant split into two constants, SASHLESS_HSLIDER_CAPPING_MM (horizontal-
+// slider, i.e. sliding-window X) and SASHLESS_DH_CAPPING_MM (double-hung top/bottom sash). Same
+// numeric value (10) as the old single constant — this batch changes no numeric behaviour anywhere
+// — split purely so each call site can carry its own orientation-correctness comment without the
+// two unrelated leaf shapes sharing one name. SASHLESS_HSLIDER_CAPPING_MM's own usage (~line 5900
+// below) is flagged WRONG-ORIENTATION until a future "numbers batch" (see its own comment there and
+// Task 1's new sashless Case 5 in buildExportElevation) — kept in place, unrenamed-again, only
+// because fixing it is explicitly out of scope here. SASHLESS_DH_CAPPING_MM's own usage
+// (buildDoubleHungUnit, ~line 6030 below) is already correct — no such caveat needed there.
+const SASHLESS_HSLIDER_CAPPING_MM = 10;
+const SASHLESS_DH_CAPPING_MM = 10;
 // SASHLESS_FRAME_TUCKIN_MM — sliding-window family only. Same "flat per row, not per panel" shape
 // as FRAME_TUCKIN_MM above (2 frame-touching edges × a fixed mm-per-edge figure), but built from
 // 3mm hidden per edge instead of 20mm — i.e. 2 × 3mm = 6mm/row, leaving 7mm of the 10mm stile
@@ -5820,33 +5840,56 @@ function buildSlidingWinOverlapTree(pattern, sectionWidthsMM, leaves) {
 // effectively unreachable for every current sliding preset id (batch 18 extended the overlap
 // treatment to doors too) — kept in place rather than deleted, since it's still the fallback
 // for `id` undefined/non-sliding and it's cheap to keep as a defensive default.
-// Batch 42 — `sashless` (default false) stamps every leaf with SASHLESS_STILE_MM left/right and
-// zero top/bottom (glass edge-to-edge top and bottom — the two genuinely unsupported edges, per
-// AS1288's own definition of this condition) plus a `sashless: true` marker, instead of the
-// normal uniform DEFAULT_SASH_MM on all four edges.
+// Batch 42 — `sashless` (default false) stamps every leaf with the sashless-stile constant
+// (renamed batch 61 to SASHLESS_HSLIDER_CAPPING_MM) left/right and zero top/bottom (glass edge-to-edge top and
+// bottom — believed at the time to be the two genuinely unsupported edges, per AS1288's own
+// definition of this condition — see batch 61's correction to this belief below) plus a
+// `sashless: true` marker, instead of the normal uniform DEFAULT_SASH_MM on all four edges.
 // Batch 45 — corrected: a sashless O ('fixed') leaf must be zero on ALL FOUR edges, matching an
 // ordinary bare fixed pane exactly — it has no sash material at all, left/right included. Batch
-// 42 originally stamped SASHLESS_STILE_MM on every sashless leaf's left/right regardless of type,
-// which was wrong for O specifically (there is no real stile there). SASHLESS_STILE_MM left/right
-// is still correct and unchanged for X ('horizontal-slider') leaves — that's the pane whose glass
-// genuinely stops short of the full width, at a narrow real stile.
+// 42 originally stamped that constant on every sashless leaf's left/right regardless of type,
+// which was wrong for O specifically (there is no real stile there). It is still correct and
+// unchanged for X ('horizontal-slider') leaves — that's the pane whose glass genuinely stops short
+// of the full width, at a narrow real stile.
 // Batch 46 — corrected again: `sashless: true` itself no longer goes on O leaves. Confirmed by the
 // person (physical product, not derived): a sashless O's top, bottom, AND outer jamb edge are all
 // genuinely supported by the frame — only its inner vertical edge (facing an X) is unsupported,
 // and that's already captured export-side by Case 4 (unframedEdges), not by the sashless flag.
-// `sashless: true` means "this pane's horizontal edges are unsupported, route to AS1288 Clause
-// 5.15" — true for X, false for O. O keeps its all-zero sash (batch 45, unchanged) but no longer
-// carries the flag at all; only X leaves do.
+// O keeps its all-zero sash (batch 45, unchanged) but no longer carries the flag at all; only X
+// leaves do.
+// Batch 61 — CORRECTS a wrong blanket claim this comment block used to make here ("sashless: true
+// means this pane's horizontal [top/bottom] edges are unsupported, route to AS1288 Clause 5.15").
+// That was only ever true for vertical-slider (double-hung); for THIS function's own X
+// (horizontal-slider) leaves it has always been backwards — an X's real sashEdgesMM (below) has
+// ZERO material top/bottom and REAL material left/right, so its genuinely free/unsupported edges
+// are top/bottom, the opposite of what SASHLESS_HSLIDER_CAPPING_MM's own left/right placement
+// suggests. `sashless: true` now means, precisely: "this pane's glass is held on two opposite
+// edges only; the free edges are given by unframedEdges" (see buildExportElevation's new Case 5 and
+// configurator_export_schema.md's corrected `sashless` field note) — not a blanket "top/bottom are
+// always the free edges" claim. Fixing SASHLESS_HSLIDER_CAPPING_MM's own left/right placement to
+// match the true top/bottom orientation is explicitly deferred to a future "numbers batch" — see
+// that constant's own definition comment and the loud warning at its use below.
 function buildAssemblyPresetTree(pattern, sectionWidthsMM, mullionThicknessMM, productClass, id, sashless) {
   const slideDirections = computeDefaultSlideDirections(pattern);
   const leaves = pattern.split('').map((ch, i) => {
     const type = ch === 'O' ? 'fixed' : 'horizontal-slider';
+    // Batch 61 — SASHLESS_HSLIDER_CAPPING_MM kept on LEFT/RIGHT here, UNCHANGED numeric value and
+    // UNCHANGED edge placement (still 10mm, still left/right) — this batch makes no numeric
+    // changes anywhere. LOUD FLAG: this placement is PHYSICALLY WRONG. Per the checkbox label
+    // change in renderAssemblyPresetForm (Task 5) and the Known-gap note in
+    // configurator_export_schema.md, a sashless horizontal slider's glass is actually held by
+    // capping on TOP and BOTTOM only, with LEFT and RIGHT free — the opposite of what this line
+    // does. A future "numbers batch" must swap this to sashTopMM/sashBottomMM and rename this
+    // constant again once it reflects correct usage (e.g. to something like
+    // SASHLESS_HSLIDER_FREE_EDGE_MM or similar, once it's a free-edge/reveal figure rather than a
+    // capping-width figure — exact naming left to that batch). Until then: DO NOT CONSUME v6
+    // SASHLESS HORIZONTAL PANES FOR REAL NUMBERS.
     const leaf = sashless
       ? {
           kind: 'filled', type, productClass,
           sashTopMM: 0, sashBottomMM: 0,
-          sashLeftMM: type === 'fixed' ? 0 : SASHLESS_STILE_MM,
-          sashRightMM: type === 'fixed' ? 0 : SASHLESS_STILE_MM,
+          sashLeftMM: type === 'fixed' ? 0 : SASHLESS_HSLIDER_CAPPING_MM,
+          sashRightMM: type === 'fixed' ? 0 : SASHLESS_HSLIDER_CAPPING_MM,
           ...(type === 'fixed' ? {} : { sashless: true })
         }
       : {
@@ -5973,15 +6016,21 @@ function getDoubleHungOverlapMM(sashless) {
 // (sashBottomMM) and its meeting-rail edge (sashTopMM, touching the top leaf) are both zeroed too
 // — both leaves end up with identical all-zero top/bottom, arrived at via the prompt's own more
 // explicit per-edge reasoning rather than a single "zero both" shortcut.
+// Batch 61 — SASHLESS_DH_CAPPING_MM (renamed from the old shared sashless-stile constant, same
+// value, see its own definition comment) on left/right here is ALREADY PHYSICALLY CORRECT, unlike the
+// horizontal-slider usage above — a sashless double-hung sash's real free edges genuinely are
+// top/bottom (both zeroed here), matching buildExportElevation's new Case 5 exactly
+// ('sashless-free-edge' on top+bottom for a vertical-slider) — no "wrong until numbers batch"
+// caveat needed for this call site.
 function buildDoubleHungUnit(productClass, topHeightMM, sashless) {
   const topLeaf = sashless
     ? { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
-        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_STILE_MM, sashRightMM: SASHLESS_STILE_MM, sashless: true }
+        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_DH_CAPPING_MM, sashRightMM: SASHLESS_DH_CAPPING_MM, sashless: true }
     : { kind: 'filled', type: 'vertical-slider', slideDirection: 'down', productClass,
         sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM };
   const bottomLeaf = sashless
     ? { kind: 'filled', type: 'vertical-slider', slideDirection: 'up', productClass,
-        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_STILE_MM, sashRightMM: SASHLESS_STILE_MM, sashless: true }
+        sashTopMM: 0, sashBottomMM: 0, sashLeftMM: SASHLESS_DH_CAPPING_MM, sashRightMM: SASHLESS_DH_CAPPING_MM, sashless: true }
     : { kind: 'filled', type: 'vertical-slider', slideDirection: 'up', productClass,
         sashTopMM: DEFAULT_SASH_MM, sashBottomMM: DEFAULT_SASH_MM, sashLeftMM: DEFAULT_SASH_MM, sashRightMM: DEFAULT_SASH_MM };
   return {
@@ -7014,6 +7063,20 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       if (!ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
       if (!ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) unframedEdgeCount++;
     }
+    // Batch 61 — unframedEdgeCount is deliberately left untouched by the new sashless Case 5
+    // (further below, on unframedEdges/unframedEdgeReasons only). This is a further, additional
+    // divergence between unframedEdgeCount and unframedEdges, on top of the two that already
+    // existed before this batch (Case 4, added batch 45, never summed into unframedEdgeCount; and
+    // the old sashless top/bottom EXCEPTION, batch 44/46, which SUPPRESSED a flag unframedEdgeCount
+    // never had to suppress since it never set one for sashless top/bottom in the first place —
+    // that exception is REMOVED as of this batch, replaced by Case 5). Case 5 is a third kind of
+    // divergence, distinct in shape from both prior ones: it's a brand-new ADDITIVE flag (not a
+    // suppression like the old exception, and not a same-shape-different-count situation like
+    // Case 4) that unframedEdgeCount's own three-source sum (sash*Locked / meeting-jamb touch /
+    // fixed-leaf-on-hasFrame:false) has no equivalent source for at all — unframedEdgeCount was
+    // never updated for Case 4 either, so this is consistent with its existing, documented
+    // staleness, not a new kind of oversight. See configurator_export_schema.md's unframedEdgeCount
+    // field note for the doc-side statement of this.
 
     // Batch 44 (schema v4) — unframedEdges: {top,bottom,left,right}, the same three sources as
     // unframedEdgeCount above, mapped per-edge instead of summed. Case 2 (sash*Locked) and Case 1
@@ -7060,23 +7123,86 @@ function buildExportElevation(ev, index, linkedPaneIds) {
       if (!ev.meetingEdges.jambL && Math.abs(l.x) < EDGE_TOUCH_EPS_MM) setUnframedEdge('left', 'frame-off');
       if (!ev.meetingEdges.jambR && Math.abs(l.x + l.w - openingW) < EDGE_TOUCH_EPS_MM) setUnframedEdge('right', 'frame-off');
     }
-    // Sashless exception — applied only to unframedEdges, never to unframedEdgeCount above. A
-    // sashless pane's rail-free top/bottom edges are represented solely by sashless:true; forcing
-    // them false here (left/right untouched) means unframedEdges's true-count can legitimately
-    // differ from unframedEdgeCount. This is a deliberate, documented inconsistency, not a bug —
-    // see configurator_export_schema.md.
-    // Batch 46 — no code change here, only a scope correction: since node.sashless is no longer
-    // ever set on an O ('fixed') leaf (see buildAssemblyPresetTree's batch-46 comment), this
-    // exception now only ever fires for X leaves in practice. A sashless O's own top/bottom follow
-    // the ordinary, unexceptional Case 1/3 rules — false with the frame on (nothing sets them),
-    // true via Case 3 when hasFrame:false (genuinely no jamb and no sash on that outer edge).
-    // Batch 55 — same exception applied to unframedEdgeReasons, forced null alongside false, per
-    // the invariant that the two fields never disagree.
+    // Batch 61 — Case 5 (schema v6): sashless free-edge flag, 'sashless-free-edge'. Replaces the
+    // pre-batch-61 "sashless exception" that used to live here (it forced unframedEdges.top/bottom
+    // to false/null for any node.sashless===true leaf — the OLD mechanism, documented in
+    // configurator_export_schema.md as "Sashless top/bottom exception (batch 44), scope corrected
+    // batch 46"). That old mechanism SUPPRESSED a flag; this one POSITIVELY SETS one, on the
+    // opposite pair of edges for a horizontal-slider, and is a genuinely new, additive Case, not a
+    // reworded version of the old exception.
+    //
+    // DELIBERATE, PHYSICALLY-BACKWARDS ORIENTATION FOR horizontal-slider — READ BEFORE "FIXING"
+    // THIS. A sashless X's actual sashEdgesMM (buildAssemblyPresetTree, ~line 5848) puts ZERO
+    // material top/bottom and a real SASHLESS_HSLIDER_CAPPING_MM (10mm) stile on LEFT/RIGHT — i.e.
+    // the pane's true free/unsupported edges are top/bottom, and left/right actually carry real
+    // material. This Case is intentionally coded the OPPOSITE way: left+right are flagged
+    // 'sashless-free-edge' for a horizontal-slider, NOT top+bottom. This is not a bug and not
+    // something to "correct" back to top/bottom — it deliberately matches sashEdgesMM's own
+    // currently-wrong left/right orientation for a sashless horizontal slider, so that
+    // unframedEdges and sashEdgesMM agree with EACH OTHER even though both are physically backwards
+    // versus the real product (glass held by capping top/bottom only, per Task 5's new checkbox
+    // label). Fixing the orientation — on both sashEdgesMM AND this Case together — is explicitly
+    // deferred to a future "numbers batch" (see configurator_export_schema.md's sashless field
+    // note and its new Known-gap section). Until that batch ships: DO NOT CONSUME v6 SASHLESS
+    // HORIZONTAL PANES FOR REAL NUMBERS.
+    //
+    // vertical-slider (double-hung top/bottom sash) is the opposite situation: its real
+    // sashEdgesMM already puts zero material top/bottom and real SASHLESS_DH_CAPPING_MM (10mm) on
+    // left/right (buildDoubleHungUnit, ~line 5976) — i.e. double-hung's real free edges genuinely
+    // ARE top/bottom. So flagging top+bottom 'sashless-free-edge' for a vertical-slider is the
+    // PHYSICALLY CORRECT orientation, matching sashEdgesMM exactly — no inconsistency for
+    // double-hung, unlike horizontal-slider.
+    //
+    // Collision-trace (worked through per Case, not assumed — see configurator_export_schema.md's
+    // "Case 2/Case 4 mutual exclusivity" section, extended here for this new Case 5):
+    //
+    // Case 4 (next-to-sashless) — cannot collide, structurally. Case 4's own gate (further below)
+    // is `node.type === 'fixed'`; this Case's own gate is `node.sashless === true`, and sashless is
+    // never true on a `fixed` leaf (buildAssemblyPresetTree's batch-46 comment: sashless:true is
+    // only ever stamped on an X or a double-hung sash, never on O). No leaf can satisfy both gates
+    // at once, so this Case and Case 4 can never both try to set an edge on the SAME leaf.
+    //
+    // Case 2 (silicone-flat) — cannot collide, structurally, for horizontal-slider OR
+    // vertical-slider. confirmUnframedJoint's own comment (~line 5003, "an unframed joint is only
+    // ever valid between fixed-glass window panes") and its enforced check (node.type/productClass
+    // must be fixed/window on both sides) mean sashTopLocked/sashBottomLocked/sashLeftLocked/
+    // sashRightLocked can never be set on a horizontal-slider or vertical-slider leaf at all — only
+    // on `fixed`. This Case only ever fires on a leaf with node.sashless===true, which is only ever
+    // an X or a double-hung sash (never fixed, per the Case-4 argument above) — so a leaf this Case
+    // touches can never have a sash*Locked flag in the first place.
+    //
+    // Case 1 (angled-joint) — cannot collide on horizontal-slider's left/right: this Case's gate
+    // for horizontal-slider is `node.type === 'horizontal-slider'`, and leafAllowedAgainstMeetingEdge
+    // (~line 4867, "node.kind === 'empty' || (... node.type === 'fixed' ...)") only ever allows a
+    // `fixed`/`window` leaf against a meeting-tagged jamb — a horizontal-slider can never touch one,
+    // so Case 1 can never fire on a sashless X's left or right at all. NOT structurally excluded
+    // for vertical-slider's top/bottom, however: leafAllowedAgainstMeetingEdge's restriction is
+    // enforced by the split/edit-blocking UI (the meeting-edge-touching gate on makeTypeButton,
+    // confirmSplit, etc.), not by buildExportElevation itself, and Case 1's own top/bottom triggers
+    // (`ev.meetingEdges.head`/`.sill`) are UI-reachable only via MEETING_EDGE_UI_JAMBS = ['jambL',
+    // 'jambR'] (~line 4873) — head/sill meeting tags have no UI path to ever become 'meeting' in
+    // this batch, so Case 1 cannot currently fire on top/bottom for ANY leaf, sashless or not. This
+    // is a UI-completeness argument, not a data-shape impossibility the way Case 2/Case 4 are — if
+    // a future batch adds head/sill meeting-edge UI, this exclusion would need re-checking.
+    //
+    // Case 3 (frame-off) — cannot collide: gated on `isFixed` (`node.type === 'fixed'`), same
+    // exclusion as Case 4 above — sashless is never true on a fixed leaf.
+    //
+    // Net: for horizontal-slider, all four prior Cases are structurally excluded from this Case's
+    // left/right — proven, not just unobserved. For vertical-slider, Cases 2/3/4 are structurally
+    // excluded from top/bottom; Case 1 is excluded only by the current UI's lack of a head/sill
+    // meeting-edge control, not by a data-shape proof — flagged as the one open seam, worth
+    // re-deriving if head/sill meeting edges ever get a UI. setUnframedEdge's own throw guard stays
+    // in place as the backstop regardless. Verified via the batch-61 headless regression suite
+    // (configurator_export_schema.md) that it does not fire in any real session driven this batch.
     if (node.sashless === true) {
-      unframedEdges.top = false;
-      unframedEdges.bottom = false;
-      unframedEdgeReasons.top = null;
-      unframedEdgeReasons.bottom = null;
+      if (node.type === 'horizontal-slider') {
+        setUnframedEdge('left', 'sashless-free-edge');
+        setUnframedEdge('right', 'sashless-free-edge');
+      } else if (node.type === 'vertical-slider') {
+        setUnframedEdge('top', 'sashless-free-edge');
+        setUnframedEdge('bottom', 'sashless-free-edge');
+      }
     }
 
     // Batch 45 — Case 4 (unframedEdges-only, NOT added to unframedEdgeCount — a second,
@@ -7315,6 +7441,21 @@ function restoreFromRawState(state) {
 // reason as batches 39/43/44 — an additive shape change to `system`'s own pane list, not to
 // rawState.
 //
+// Batch 61 — schemaVersion 6: no new field (unlike every prior bump) — unframedEdges/
+// unframedEdgeReasons can now report a new Case 5 ('sashless-free-edge') for a sashless pane's
+// left/right (horizontal-slider) or top/bottom (vertical-slider), and the old sashless top/bottom
+// EXCEPTION that used to suppress unframedEdges.top/.bottom for a sashless leaf is removed — so an
+// existing consumer reading unframedEdges/unframedEdgeReasons against a sashless pane would see
+// DIFFERENT values under the same shape, not just new values in new fields the way every prior
+// bump was purely additive. Bumped despite the shape itself being unchanged, because the MEANING
+// of an existing field's value changed for sashless panes — same "additive vs meaning change"
+// distinction that justified every prior bump, just on the "meaning changed" side of it instead of
+// "field added". See configurator_export_schema.md's own new Known-gap section: DO NOT CONSUME V6
+// SASHLESS HORIZONTAL PANES FOR REAL NUMBERS UNTIL THE NUMBERS BATCH — sashEdgesMM still disagrees
+// with unframedEdges for a sashless horizontal-slider (left/right carry real 10mm material in
+// sashEdgesMM, yet are now flagged unframed in unframedEdges) — a known, accepted inconsistency for
+// this batch only, not fixed here (out of scope — this batch changes no numeric field anywhere).
+//
 // Returns { ok: true, data } normally, or { ok: false, error } if computeCrossElevationLinks()
 // finds a count mismatch on the two elevations' meeting jambs — per the batch prompt's own "block
 // export on a count mismatch... before any export is built, in both standalone and embed mode"
@@ -7329,7 +7470,7 @@ function buildExportData() {
   return {
     ok: true,
     data: {
-      schemaVersion: 5,
+      schemaVersion: 6,
       system: {
         elevationCount: elevations.length,
         totalFrameLengthMM,
@@ -7522,7 +7663,10 @@ if (isEmbedded) {
   // Batch 39 — schemaVersion bumped to 2, matching system's own new shape (must match, per the
   // doc's own statement of what this field means). Batch 43 — bumped again to 3 for the new
   // per-pane sashless field, same precedent. Batch 55 — bumped to 5 for unframedEdgeReasons.
-  postToParent({ type: 'ready', schemaVersion: 5 });
+  // Batch 61 — bumped to 6: no new field, but unframedEdges/unframedEdgeReasons' own MEANING
+  // changed for a sashless pane (new Case 5, old sashless exception removed) — see
+  // buildExportData's own batch-61 comment for the full "meaning changed, not just added" argument.
+  postToParent({ type: 'ready', schemaVersion: 6 });
 }
 </script>
 </body>
